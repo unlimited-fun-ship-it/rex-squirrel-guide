@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Useful Algorithms — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Useful Algorithms — Squirrel Scripting in REX</h1>
+
+<p>This page collects small, self‑contained algorithmic patterns that come up again and again when scripting. Each entry explains what the algorithm does, why you might need it, and gives a Squirrel implementation you can copy straight into your mod.</p>
+
+<p>Each algorithm is written assuming the REX Squirrel API, so it uses plain Squirrel arithmetic and the <code>::game.eventCounter</code> / <code>::game.setEventCounter</code> functions for persisted values. Where the original RR algorithm used <code>counter_operation</code> or <code>holding_while</code>, the Squirrel version replaces them with ordinary arithmetic and a <code>while</code> / <code>for</code> loop — Squirrel is a real language, so most of the old contortions simply disappear.</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#modulo">The <code>%</code> (modulo) operator — doing something every X turns</a></li>
+  <li><a href="#n-times">Running something an amount of times set in a counter</a></li>
+  <li><a href="#weighted-random">Multiple outcomes random operation (weighted selection)</a></li>
+  <li><a href="#settlement-changed">Checking if a settlement changed hands</a></li>
+  <li><a href="#first-time">First‑time setup</a></li>
+</ul>
+</div>
+
+<hr>
+
+<div class="algo" id="modulo">
+<h3>The <code>%</code> (modulo) operator — doing something every X turns</h3>
+<div class="tags">
+  <span>arithmetic</span>
+  <span>periodic events</span>
+  <span>every‑N‑turns</span>
+</div>
+
+<p>The <code>%</code> operator (called <em>modulo</em>, or <em>mod</em>) returns the remainder of a Euclidean division. So <code>a = b % c</code> sets <code>a</code> to the remainder left over when <code>b</code> is divided by <code>c</code>. For example, <code>7 % 3</code> is <code>1</code>, and <code>9 % 3</code> is <code>0</code>.</p>
+
+<p>The classic use is <strong>“do something every X turns”</strong>: test <code>turn % X == 0</code>, and run the code when the test passes. That pattern fires on turn X, 2X, 3X, and so on.</p>
+
+<h4>The old RR approach</h4>
+
+<p>In RR, counters could not use the <code>%</code> operator directly, so the remainder had to be computed with a loop and a temporary counter:</p>
+
+<pre><code>;; RR — a = b % c
+declare_counter temp
+counter_operation temp = b - c
+holding_while I_CompareCounter temp &gt; 0
+  counter_operation b = b - c
+  counter_operation temp = b - c
+end_while
+declare_counter zero
+set_counter zero 0
+counter_operation a = b + zero</code></pre>
+
+<p>This works by repeatedly subtracting <code>c</code> from <code>b</code> until the result is zero or negative; the last non‑negative value of <code>b</code> is the remainder. It is correct, but it is slow, verbose, and hard to read.</p>
+
+<h4>The Squirrel version</h4>
+
+<p>Squirrel has the <code>%</code> operator built in, so the algorithm collapses to a single expression:</p>
+
+<pre><code>// a = b % c
+local a = b % c;</code></pre>
+
+<p>There is no need for a temporary counter, a <code>while</code> loop, or a “zero” counter. The expression is evaluated directly.</p>
+
+<h4>Practical example — a periodic event every 5 turns</h4>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    local turn = ::game.eventCounter("turn_number");
+    if (turn == null) turn = 0;
+
+    // Every 5th turn (5, 10, 15, …).
+    if (turn % 5 == 0 &amp;&amp; turn &gt; 0) {
+        local player = ::campaign.factionById(::game.localFactionId());
+        if (player != null) {
+            player.money += 1000;
+        }
+    }
+});</code></pre>
+
+<h4>Practical example — a periodic event on a per‑object counter</h4>
+
+<pre><code>::events.on("SettlementTurnStart", function(payload) {
+    local s = payload.settlement;
+    if (s == null) return;
+
+    if (s.turnsOwned % 10 == 0 &amp;&amp; s.turnsOwned &gt; 0) {
+        s.population += 200;
+        ::game.log(s.name + " celebrates its " + s.turnsOwned + "-turn anniversary.");
+    }
+});</code></pre>
+
+<h4>Notes and pitfalls</h4>
+
+<ul>
+  <li><strong>Squirrel’s <code>%</code> follows C semantics</strong> — the result takes the sign of the dividend. So <code>-7 % 3</code> is <code>-1</code>, not <code>2</code>. If you need a strictly non‑negative remainder, use <code>((b % c) + c) % c</code>.</li>
+  <li><strong>Guard against <code>turn == 0</code></strong> if you do not want the event to fire on turn 0. The modulo test alone will match it.</li>
+  <li><strong>Integer only.</strong> Squirrel’s <code>%</code> works on integers. If you are working with floats, use <code>fmod</code> semantics yourself.</li>
+  <li><strong>Do not repeat the RR loop.</strong> The <code>holding_while</code> construction from RR is not needed in Squirrel. Writing it out by hand would be a performance regression.</li>
+</ul>
+</div>
+
+<hr>
+
+<div class="algo" id="n-times">
+<h3>Running something an amount of times set in a counter</h3>
+<div class="tags">
+  <span>loops</span>
+  <span>dynamic iteration</span>
+</div>
+
+<p>You want to repeat a block of code <em>N</em> times, where <em>N</em> is not a fixed number but the value of a counter (a number of units to spawn, a number of turns to simulate, a number of reinforcements to grant).</p>
+
+<h4>The old RR approach</h4>
+
+<p>RR’s <code>for_each</code> loop only iterates game lists, so a plain “do this N times” had to be built out of a <code>holding_while</code> loop and a temporary counter:</p>
+
+<pre><code>;; RR
+declare_counter temp
+declare_counter zero
+set_counter zero 0
+declare_counter a
+set_counter a your_number
+counter_operation temp = a + zero
+holding_while I_CompareCounter temp &gt; 0
+  inc_counter temp -1
+  ;; do something
+end_while</code></pre>
+
+<p>The temporary counter <code>temp</code> starts at <code>a</code>, is decremented once per iteration, and stops when it reaches 0 — so the body runs exactly <code>a</code> times.</p>
+
+<h4>The Squirrel version</h4>
+
+<p>Squirrel has real <code>for</code> and <code>while</code> loops, so the algorithm is simply:</p>
+
+<pre><code>local a = ::game.eventCounter("a_counter");
+if (a == null) a = 0;
+
+for (local i = 0; i &lt; a; i++) {
+    // do something — this runs `a` times
+}</code></pre>
+
+<p>If you also need the iteration number (say, to name a spawned unit or to apply a different effect on the first pass), use the loop variable directly:</p>
+
+<pre><code>for (local i = 0; i &lt; a; i++) {
+    ::game.log("Iteration " + i + " of " + a);
+}</code></pre>
+
+<p>If you prefer a <code>while</code> loop — for example, because you also want to mutate <code>a</code> inside the body — that works too:</p>
+
+<pre><code>local remaining = a;
+while (remaining &gt; 0) {
+    // do something
+    remaining -= 1;
+}</code></pre>
+
+<h4>Practical example — spawn N units, where N is a counter</h4>
+
+<pre><code>::events.on("FactionTurnStart", function(payload) {
+    local faction = payload.faction;
+    if (faction == null) return;
+
+    local count = ::game.eventCounter("reinforcement_count");
+    if (count == null) count = 0;
+
+    local capital = faction.capital;
+    if (capital == null) return;
+
+    local army = capital.army;
+    if (army == null) return;
+
+    for (local i = 0; i &lt; count; i++) {
+        army.createUnit("roman hastati", 0, 0, 0, -1);
+    }
+
+    ::game.log("Spawned " + count + " hastati in " + capital.name + ".");
+});</code></pre>
+
+<h4>Notes and pitfalls</h4>
+
+<ul>
+  <li><strong>Counter may be null.</strong> <code>::game.eventCounter</code> returns <code>null</code> when the counter does not yet exist. Always coalesce it (as above) before using it in a loop condition.</li>
+  <li><strong>Do not mutate the loop variable.</strong> In a <code>for</code> loop, changing <code>i</code> inside the body has no defined effect on the iteration. If you need that behaviour, use <code>while</code>.</li>
+  <li><strong>Use the right range.</strong> <code>for (local i = 0; i &lt; a; i++)</code> runs exactly <code>a</code> times — not <code>a + 1</code>, and not <code>a - 1</code>. Watch for off‑by‑one errors when porting old code that used different comparison operators.</li>
+  <li><strong>Break early if you need to.</strong> Squirrel supports <code>break</code> and <code>continue</code>, which are often cleaner than RR’s <code>terminate_monitor</code> tricks.</li>
+</ul>
+</div>
+
+<hr>
+
+<div class="algo" id="weighted-random">
+<h3>Multiple outcomes random operation (weighted selection)</h3>
+<div class="tags">
+  <span>random</span>
+  <span>weighted choice</span>
+  <span>branching</span>
+</div>
+
+<p>Pick one of several possible outcomes at random, with each outcome carrying a specified probability. In most languages this is a simple <code>if</code> / <code>else if</code> chain over a random number.</p>
+
+<h4>The old RR approach</h4>
+
+<p>In RR, <code>RandomPercent</code> could not be assigned to a counter — it could only appear inside a condition. So a chain of independent tests had to be used, with a “taken” flag to make sure only the first matching test ran:</p>
+
+<pre><code>;; RR — four equally likely outcomes
+declare_counter chance_taken
+set_counter chance_taken 0
+
+if RandomPercent &lt;= 25
+  set_counter chance_taken 1
+  ;; result 1
+end_if
+
+if RandomPercent &lt;= 33
+   &amp;&amp; I_CompareCounter chance_taken = 0
+  set_counter chance_taken 1
+  ;; result 2
+end_if
+
+if RandomPercent &lt;= 50
+   &amp;&amp; I_CompareCounter chance_taken = 0
+  set_counter chance_taken 1
+  ;; result 3
+end_if
+
+if I_CompareCounter chance_taken = 0
+  ;; result 4
+end_if</code></pre>
+
+<p>Even though it looks like it, this gives each outcome a 25% chance. The reason is that the tests are evaluated in sequence against the <em>remaining</em> probability space:</p>
+
+<ul>
+  <li>Outcome 1 wins 25% of the time. When it does, <code>chance_taken</code> is set and the rest are skipped.</li>
+  <li>If outcome 1 loses (75% of the time), three outcomes are left, so outcome 2 should win 1/3 of those cases. 1/3 × 75% = 25%.</li>
+  <li>The same logic gives outcome 3 a 1/2 × (remaining 50%) = 25% chance, and outcome 4 the final 25%.</li>
+</ul>
+
+<p>In general, for a set of outcomes <span class="math">o₁, o₂, …, oₙ, …, o_f</span> (with <span class="math">o_f</span> the final fallback) with desired probabilities <span class="math">p₁, p₂, …, pₙ, …, p_f</span>, the threshold you write into the script for outcome <span class="math">oₙ</span> is:</p>
+
+<p style="text-align:center;"><span class="math">rₙ = pₙ / (pₙ + pₙ₊₁ + … + p_f)</span></p>
+
+<p>For four equal outcomes: <span class="math">r₁ = 1/4 = 25%</span>, <span class="math">r₂ = 1/3 ≈ 33%</span>, <span class="math">r₃ = 1/2 = 50%</span>, and the fallback is unconditional.</p>
+
+<h4>The Squirrel version</h4>
+
+<p>Squirrel has <code>rand()</code>, which returns an integer. Taking <code>rand() % 100</code> gives a value from 0 to 99, and a straight <code>if</code> / <code>else if</code> chain does the rest:</p>
+
+<pre><code>// Four equally likely outcomes.
+local roll = rand() % 100;   // 0..99
+
+if (roll &lt; 25) {
+    // result 1  (25%)
+} else if (roll &lt; 50) {
+    // result 2  (25%)
+} else if (roll &lt; 75) {
+    // result 3  (25%)
+} else {
+    // result 4  (25%)
+}</code></pre>
+
+<p>Because the thresholds are cumulative, the <code>else if</code> chain already guarantees “the first matching test wins” — no <code>chance_taken</code> counter is needed, and no per‑outcome re‑derivation. Each threshold <code>tₙ</code> is just the running total of all previous probabilities:</p>
+
+<p style="text-align:center;"><span class="math">tₙ = p₁ + p₂ + … + pₙ</span></p>
+
+<h4>Practical example — unequal weights</h4>
+
+<p>Suppose you want a 50% chance of result 1, a 30% chance of result 2, and a 20% chance of result 3:</p>
+
+<pre><code>local roll = rand() % 100;
+
+if (roll &lt; 50) {
+    // result 1  (50%)
+} else if (roll &lt; 80) {          // 50 + 30
+    // result 2  (30%)
+} else {
+    // result 3  (20%)
+}</code></pre>
+
+<h4>Practical example — scripting a random event on a turn</h4>
+
+<pre><code>::events.on("FactionTurnStart", function(payload) {
+    local faction = payload.faction;
+    if (faction == null) return;
+    if (::game.localFactionId() != faction.id) return;
+
+    local roll = rand() % 100;
+
+    if (roll &lt; 10) {
+        // 10% — rare bad event
+        ::game.showHistoricEvent("senate_01", "Bad News",
+            "Bandits are raiding your countryside.");
+    } else if (roll &lt; 30) {
+        // 20% — minor good event
+        faction.money += 200;
+    } else if (roll &lt; 60) {
+        // 30% — nothing happens
+    } else {
+        // 40% — silent
+    }
+});</code></pre>
+
+<h4>Notes and pitfalls</h4>
+
+<ul>
+  <li><strong>Always leave a fallback.</strong> Finish with a plain <code>else</code> so that any unexpected value is handled. If your thresholds sum to less than 100, the <code>else</code> branch absorbs the remainder.</li>
+  <li><strong>Do not compare <code>rand() % 100</code> with <code>&lt;=</code> by accident.</strong> <code>&lt;</code> gives the threshold as a percentage directly. <code>&lt;= 25</code> would include 25 in the first bucket, making that bucket 26%.</li>
+  <li><strong>Roll once per event.</strong> If you need several independent random decisions, call <code>rand() % 100</code> once per decision. Do not roll once and reuse the value for multiple questions.</li>
+  <li><strong>Do not reproduce the RR derivation.</strong> The RR version needed the probability formula <span class="math">rₙ = pₙ / (sum of remaining p)</span> because each test was independent. Squirrel’s <code>else if</code> chain makes each test conditional on the previous ones failing, so the plain cumulative thresholds are correct.</li>
+</ul>
+</div>
+
+<hr>
+
+<div class="algo" id="settlement-changed">
+<h3>Checking if a settlement changed hands</h3>
+<div class="tags">
+  <span>state tracking</span>
+  <span>settlement ownership</span>
+</div>
+
+<p>You want to detect when a settlement is captured, traded, or otherwise transferred from one faction to another — for example, to run a “the city has fallen” message, to destroy specific buildings, or to update your own per‑settlement bookkeeping.</p>
+
+<h4>The old RR approach</h4>
+
+<p>RR had no native “owner changed” event, so the standard technique was to assign each faction a numeric id, store that id on every settlement, and then poll at the start of each turn:</p>
+
+<pre><code>;; RR — assign each faction a numeric id
+declare_counter faction_id
+for_each faction in world
+  store_counter faction_id faction l_faction_id
+  inc_counter faction_id 1
+end_for
+
+;; At game start, tag every settlement with its owner's id
+for_each faction in world
+  declare_counter faction_id
+  retrieve_counter l_faction_id faction faction_id
+
+  for_each settlement in faction
+    store_counter faction_id settlement l_owner_id
+  end_for
+end_for
+
+;; On each new turn, compare the current owner with the stored one
+monitor_event NewTurnStart TrueCondition
+  for_each faction in world
+    declare_counter faction_id
+    retrieve_counter l_faction_id faction faction_id
+
+    for_each settlement in faction
+      declare_counter previous_owner_id
+      retrieve_counter l_owner_id settlement previous_owner_id
+      if I_CompareCounter faction_id != previous_owner_id
+        store_counter faction_id settlement l_owner_id
+        ;; do something — the settlement has changed hands
+      end_if
+    end_for
+  end_for
+end_monitor</code></pre>
+
+<p>This works, but it needs two <code>for_each</code> loops per turn, it relies on a hand‑rolled id scheme, and it only catches changes at turn boundaries — a settlement captured and lost in the same turn would never be noticed.</p>
+
+<h4>The Squirrel version</h4>
+
+<p>REX exposes the change directly. The cleanest approach is to listen for the event that fires when a settlement is captured:</p>
+
+<pre><code>::events.on("GeneralCaptureSettlement", function(payload) {
+    local settlement = payload.settlement;
+    local newOwner   = payload.faction;
+    if (settlement == null || newOwner == null) return;
+
+    ::game.log(settlement.name + " has fallen to " + newOwner.name + ".");
+
+    // Do your per-capture work here.
+    newOwner.money += 500;
+});</code></pre>
+
+<div class="note">
+<strong>Check the payload.</strong> The exact field names on the payload are documented in <code>api.d.nut</code>. If you are unsure, log the payload first:
+<pre><code>::events.on("GeneralCaptureSettlement", function(payload) {
+    ::game.log("Payload: " + payload);
+});</code></pre>
+</div>
+
+<h4>If you need to catch every kind of transfer, not just conquest</h4>
+
+<p>Settlements can also change hands by trade, by script, or by being given away. To catch those, or to keep a history of owners, track the current owner id in a <code>persistent</code> table keyed by the settlement’s index, and compare it on a turn boundary:</p>
+
+<pre><code>// At pluginLoad, make sure our table exists.
+::events.on("pluginLoad", function() {
+    if (!("lastOwner" in persistent))
+        persistent.lastOwner &lt;- {};
+});
+
+::events.on("NewTurnStart", function(payload) {
+    for (local i = 0; i &lt; ::stratMap.regionCount(); i++) {
+        local region = ::stratMap.region(i);
+        if (region == null) continue;
+
+        local s = region.settlement;
+        if (s == null) continue;
+
+        local newOwnerId = (s.owner == null) ? -1 : s.owner.id;
+        local key = s.index;
+
+        if (!(key in persistent.lastOwner)) {
+            persistent.lastOwner[key] &lt;- newOwnerId;
+            continue;
+        }
+
+        local oldOwnerId = persistent.lastOwner[key];
+        if (newOwnerId != oldOwnerId) {
+            persistent.lastOwner[key] &lt;- newOwnerId;
+
+            local oldOwner = ::campaign.factionById(oldOwnerId);
+            local newOwner = ::campaign.factionById(newOwnerId);
+            ::game.log(s.name + " transferred from "
+                + (oldOwner == null ? "nobody" : oldOwner.name)
+                + " to "
+                + (newOwner == null ? "nobody" : newOwner.name) + ".");
+        }
+    }
+});</code></pre>
+
+<h4>Native properties worth knowing</h4>
+
+<p>You may not even need to track anything yourself. The <code>Settlement</code> class already exposes:</p>
+
+<ul>
+  <li><code>Settlement.owner</code> — the current owning faction (read/write).</li>
+  <li><code>Settlement.previousOwnerId</code> — the id of the faction that owned it before the current one.</li>
+  <li><code>Settlement.tradedFromId</code> — the faction it was traded from, or <code>-1</code> if taken by force.</li>
+  <li><code>Settlement.turnsOwned</code> — how many turns the current owner has held it.</li>
+</ul>
+
+<p>With those, distinguishing a conquest from a trade is a one‑line test:</p>
+
+<pre><code>::events.on("GeneralCaptureSettlement", function(payload) {
+    local s = payload.settlement;
+    if (s == null) return;
+
+    if (s.tradedFromId == -1) {
+        ::game.log(s.name + " was captured by force.");
+    } else {
+        ::game.log(s.name + " was traded.");
+    }
+});</code></pre>
+
+<h4>Notes and pitfalls</h4>
+
+<ul>
+  <li><strong>Choose the right trigger.</strong> <code>GeneralCaptureSettlement</code> fires on conquest. If you need to catch trades and script‑driven transfers too, use the polling pattern with <code>persistent</code> (or the native <code>tradedFromId</code> field).</li>
+  <li><strong>Polling only sees turn boundaries.</strong> A settlement captured and lost within a single turn will be missed by a <code>NewTurnStart</code> scan. Use the event if you need to catch every transition.</li>
+  <li><strong>Persistent is not saved.</strong> A <code>persistent</code> table survives a script reload (<code>::game.reloadScripts()</code>) but is <em>not</em> written to the campaign save. If you need the last‑owner tracking to survive a save/load, store the value in an event counter named after the settlement, or rebuild the table on <code>campaignMapLoaded</code>.</li>
+  <li><strong>Use a stable key.</strong> <code>Settlement.index</code> is stable for the life of the campaign, so it is safe as a table key. Do not key by display name — players can rename settlements.</li>
+</ul>
+</div>
+
+<hr>
+
+<div class="algo" id="first-time">
+<h3>First‑time setup</h3>
+<div class="tags">
+  <span>initialisation</span>
+  <span>one‑shot</span>
+</div>
+
+<p>You want a block of code to run exactly once per campaign — setting up initial diplomatic stances, giving a specific faction starting money, applying a scripted bonus based on which faction the player chose, and so on. The challenge is that a naive “turn 0” check will fire again every time the player saves and reloads on that turn.</p>
+
+<h4>The old RR approach</h4>
+
+<p>RR solved this with a persistent counter that acted as a “have we run yet?” flag:</p>
+
+<pre><code>;; RR
+declare_persistent_counter first_time_setup
+
+if I_CompareCounter first_time_setup = 0
+    ;; do your once‑only stuff here
+    if not I_LocalFaction romans_etruscans
+        console_command become_protector romans_julii romans_etruscans
+    end_if
+
+    console_command diplomatic_stance romans_etruscans romans_brutii war
+
+    ;; set the flag — on the next load this will be 1 and the block will be skipped
+    set_counter first_time_setup 1
+end_if</code></pre>
+
+<p>The persistent counter is serialised with the save, so the block runs exactly once.</p>
+
+<h4>The Squirrel version</h4>
+
+<p>Squirrel has two equally good approaches. Choose based on whether you want the block to run for <em>new campaigns only</em>, or for <em>any campaign the script finds itself in</em> — including a campaign started before the script was installed.</p>
+
+<h4>Approach A — new campaigns only, via <code>newGameLoaded</code></h4>
+
+<p>The <code>newGameLoaded</code> event fires when a brand‑new campaign’s world data has been built. Loading a save does <em>not</em> go through this hook, so anything registered on it runs exactly once per fresh campaign:</p>
+
+<pre><code>::events.on("newGameLoaded", function() {
+    // This runs once, when a new campaign starts. It will not run on load.
+    local etruscans = ::campaign.factionByName("romans_etruscans");
+    local julii      = ::campaign.factionByName("romans_julii");
+    local brutii     = ::campaign.factionByName("romans_brutii");
+
+    if (etruscans != null &amp;&amp; julii != null
+        &amp;&amp; ::game.localFactionId() != etruscans.id) {
+        ::game.runConsoleCommand("become_protector",
+            "romans_julii romans_etruscans");
+    }
+
+    if (etruscans != null &amp;&amp; brutii != null) {
+        ::campaign.setStance(::Enum.DiplomaticRelation.war, etruscans, brutii);
+    }
+});</code></pre>
+
+<p>This is the most direct replacement for the RR pattern, and it is the right choice when your script is installed before the campaign begins.</p>
+
+<h4>Approach B — any campaign, via a flag counter</h4>
+
+<p>If your script may be added to a campaign that is already underway, or you want the safety of an explicit flag regardless of how the script got there, use an event counter:</p>
+
+<pre><code>::events.on("campaignMapLoaded", function() {
+    // campaignMapLoaded fires every time the strat map opens, so we need a
+    // guard that persists across loads and inside the save.
+    if (::game.eventCounter("first_time_setup") == 1) return;
+
+    local etruscans = ::campaign.factionByName("romans_etruscans");
+    local julii      = ::campaign.factionByName("romans_julii");
+    local brutii     = ::campaign.factionByName("romans_brutii");
+
+    if (etruscans != null &amp;&amp; julii != null
+        &amp;&amp; ::game.localFactionId() != etruscans.id) {
+        ::game.runConsoleCommand("become_protector",
+            "romans_julii romans_etruscans");
+    }
+
+    if (etruscans != null &amp;&amp; brutii != null) {
+        ::campaign.setStance(::Enum.DiplomaticRelation.war, etruscans, brutii);
+    }
+
+    ::game.setEventCounter("first_time_setup", 1);
+});</code></pre>
+
+<div class="note">
+<strong>Why an event counter and not <code>persistent</code>?</strong> The <code>persistent</code> table survives a script reload but is <strong>not</strong> written into the campaign save. Event counters <em>are</em> saved with the campaign, which is exactly what a first‑time‑setup flag needs. The RR pattern used a persistent counter because that was the only tool RR had; in REX the two ideas are distinct, and the event counter is the right one for this job.
+</div>
+
+<h4>Practical example — choose a starting bonus based on the player’s faction</h4>
+
+<pre><code>::events.on("newGameLoaded", function() {
+    local player = ::campaign.factionById(::game.localFactionId());
+    if (player == null) return;
+
+    if (player.name == "romans_julii") {
+        player.money += 5000;
+    } else if (player.name == "romans_brutii") {
+        local capital = player.capital;
+        if (capital != null &amp;&amp; capital.army != null) {
+            capital.army.createUnit("roman princeps", 2, 0, 0, -1);
+        }
+    } else if (player.name == "romans_scipii") {
+        // grant a temporary movement boost, or any other one‑off effect
+    }
+
+    ::game.showHistoricEvent("senate_01",
+        "Campaign Started",
+        "Your faction has received its starting blessing.");
+});</code></pre>
+
+<h4>Notes and pitfalls</h4>
+
+<ul>
+  <li><strong>Pick the right event.</strong> <code>newGameLoaded</code> fires only for brand‑new campaigns. <code>campaignMapLoaded</code> fires every time the map opens (including returning from a battle) and needs a flag. <code>GameReloaded</code> fires when a save is loaded.</li>
+  <li><strong>Do not rely on <code>turn == 0</code>.</strong> A turn‑based check re‑fires whenever the player loads a save made on that turn. Always use a counter or the appropriate event.</li>
+  <li><strong>Event counters start as <code>null</code>, not <code>0</code>.</strong> <code>::game.eventCounter("name")</code> returns <code>null</code> for a counter that has never been set. Compare against <code>null</code> or coalesce to 0 before testing <code>== 0</code>.</li>
+  <li><strong>Prefer named flags over magic strings.</strong> Use a descriptive counter name like <code>"first_time_setup"</code> rather than a generic one, so the intent is clear when reading the script later.</li>
+</ul>
+</div>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

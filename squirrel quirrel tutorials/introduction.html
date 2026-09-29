@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Introduction — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Introduction to Squirrel Scripting in REX</h1>
+
+<p>Scripting has been greatly expanded in the REX Community Patch. This short article will try to give you some of the highlights, focusing on what is new or different compared to the old Rome Remastered (RR) scripting system. The examples are written for the Squirrel API.</p>
+
+<h2>What is Squirrel?</h2>
+
+<p>Squirrel is a lightweight, C‑like scripting language embedded in REX. Unlike the old line‑based scripting, it is a <strong>real programming language</strong> with variables, functions, classes, and events. You write <code>.nut</code> files, place them in your mod’s <code>script</code> folder (note: singular — <em>not</em> <code>scripts</code>), and REX loads them at runtime.</p>
+
+<p>The two main ideas to understand are:</p>
+
+<ul>
+  <li><strong>Lifecycle hooks</strong> – code that runs at a fixed point in the game’s life, like <code>pluginLoad</code>, <code>gameInit</code>, <code>newGameLoaded</code>, <code>campaignMapLoaded</code>, <code>unloadCampaign</code>.</li>
+  <li><strong>Event handlers</strong> – code that runs in response to something happening, like <code>FactionTurnStart</code>, <code>CharacterTurnEnd</code>, <code>BuildingCompleted</code>, <code>CityRebels</code>, or <code>EventCounter</code>.</li>
+</ul>
+
+<p>Both are registered with <code>::events.on(name, handler)</code>.</p>
+
+<h2>Script loading</h2>
+
+<p>There is <strong>no</strong> <code>script</code> / <code>end_script</code> block, and no <code>descr_strat</code> entry. A <code>.nut</code> file placed in the mod’s <code>script</code> folder is loaded automatically. Multiple files can run side‑by‑side. The scripting runtime starts with a hook called <code>pluginLoad</code>, which fires once the entry script has finished loading — before any game exists.</p>
+
+<pre><code>::events.on("pluginLoad", function() {
+    ::game.log("Script world loaded.");
+    ::game.log("API version: " + ::scripting.apiVersion());
+    ::game.log("Port: " + ::scripting.port());   // "romans" or "medieval2"
+});</code></pre>
+
+<h2>Counters and persistent state</h2>
+
+<p>The classic counters still exist — you can read and write them from Squirrel. They go through the engine’s own command system, so any old‑style monitor watching them will still fire.</p>
+
+<pre><code>// Read an event counter (null if it doesn't exist).
+local value = ::game.eventCounter("my_counter");
+
+// Write one (creating it if needed).
+::game.setEventCounter("my_counter", 5);</code></pre>
+
+<p>For counters that need to survive <strong>script reloads</strong> (<code>::game.reloadScripts()</code>), REX provides a <code>persistent</code> table. Anything you store there is carried across into the new script world.</p>
+
+<pre><code>persistent.firstTimeSetup &lt;- true;</code></pre>
+
+<p>Be careful: <code>persistent</code> is about the script runtime, <strong>not</strong> the campaign save. For state that must survive save/load, use event counters, or store data on the objects themselves (see below).</p>
+
+<p>A first‑time setup, for example, looks like this:</p>
+
+<pre><code>::events.on("campaignMapLoaded", function() {
+    if (::game.eventCounter("first_time_setup") == 1) return;
+
+    local parthia = ::campaign.factionByName("parthia");
+    if (parthia != null) parthia.money += 40000;
+
+    ::game.setEventCounter("first_time_setup", 1);
+});</code></pre>
+
+<div class="note">
+<strong>Note:</strong> if <code>::campaign</code> is not exposed in your build, see the section “Finding the Campaign object” at the end.
+</div>
+
+<h2>Event payloads — the new “local scope”</h2>
+
+<p>In RR, the <code>local</code> keyword let a monitor refer to whatever object the event was about. In REX this is replaced by <strong>event payloads</strong>. Every engine trigger event passes a single payload object to your handler, and you read the fields you need off it by name.</p>
+
+<pre><code>// A building called "abandon_settlement" was completed.
+::events.on("BuildingCompleted", function(payload) {
+    if (payload.building.chainName == "abandon_settlement") {
+        payload.settlement.provokeRebellion();
+    }
+});
+
+// A city rebelled — destroy the building if it exists.
+::events.on("CityRebels", function(payload) {
+    local building = payload.settlement.buildingOfChain("abandon_settlement");
+    if (building != null) building.destroy();
+});</code></pre>
+
+<p>The field names on the payload vary per event — check <code>api.d.nut</code> under the <code>::events</code> table, and if you are unsure, log the payload:</p>
+
+<pre><code>::events.on("SomeEvent", function(payload) {
+    ::game.log("Payload: " + payload);
+});</code></pre>
+
+<h2>Loops</h2>
+
+<p>Squirrel has real <code>for</code>, <code>foreach</code>, and <code>while</code> loops — no <code>for_each ... end_for</code> needed.</p>
+
+<pre><code>// Kill every character in a faction after turn 5.
+::events.on("NewTurnStart", function() {
+    if (::game.eventCounter("turn_number") &lt;= 5) return;
+
+    local host = ::campaign.factionByName("brennus_host");
+    if (host == null) return;
+
+    for (local i = 0; i &lt; host.characterCount; i++) {
+        local c = host.character(i);
+        if (c != null) c.kill();
+    }
+});</code></pre>
+
+<p>Or iterate an array directly:</p>
+
+<pre><code>foreach (record in someCharacter.children()) {
+    ::game.log("Child: " + record.displayName);
+}</code></pre>
+
+<h2>Storing extra data on objects</h2>
+
+<p>In RR you used <code>store_counter</code> / <code>retrieve_counter</code> to attach arbitrary values to settlements, characters, units, or factions. In REX you have two far cleaner options:</p>
+
+<p><strong>1. Use the object’s own properties.</strong> Most things you would want to track are already there.</p>
+
+<pre><code>::events.on("SettlementTurnStart", function(payload) {
+    local s = payload.settlement;
+    s.turnsOwned += 1;          // native property, saved with the campaign
+    ::game.log(s.name + " owned for " + s.turnsOwned + " turns.");
+});</code></pre>
+
+<p><strong>2. Keep a Squirrel table in <code>persistent</code>, keyed by the object.</strong> This is the right way to track custom data that has no native property.</p>
+
+<pre><code>// At pluginLoad, make sure our data table exists.
+::events.on("pluginLoad", function() {
+    if (!("settlementData" in persistent))
+        persistent.settlementData &lt;- {};
+});
+
+::events.on("SettlementTurnStart", function(payload) {
+    local s = payload.settlement;
+    local key = s.index;        // a stable id for the settlement
+
+    if (!(key in persistent.settlementData))
+        persistent.settlementData[key] &lt;- { ownedTurns = 0 };
+
+    persistent.settlementData[key].ownedTurns += 1;
+});</code></pre>
+
+<p>Remember that <code>persistent</code> is lost when the player <strong>saves and reloads</strong> the campaign — only the script runtime reload keeps it. For save‑compatible data, use event counters or the object’s own properties.</p>
+
+<h2>Logging</h2>
+
+<p>Logging is much better than in RR. Two things help immediately:</p>
+
+<ul>
+  <li><code>::game.log(message)</code> writes a line to the engine log under the script channel. Use it liberally.</li>
+  <li><code>::game.showHistoricEvent(picture, title, body)</code> raises a historic‑event popup to the player (a one‑way message, no choice).</li>
+</ul>
+
+<pre><code>::game.log("Turn " + ::game.eventCounter("turn_number") + ": treasury is low.");
+::game.showHistoricEvent("senate_01", "Warning", "The treasury is running dry.");</code></pre>
+
+<p>If you need a <strong>binary choice</strong> (Yes / No), <code>showHistoricEvent</code> is not the right tool — you need the <code>Campaign.raiseEvent</code> method with <code>isChoice = true</code>. See the separate Player Choice Events tutorial.</p>
+
+<p>Enable detailed logs by adding these to your REX launch options:</p>
+
+<pre><code>enable_logging verbose_script_logging</code></pre>
+
+<p>Logs land in the game’s log folder (the same place RR puts them).</p>
+
+<h2>Finding the Campaign object</h2>
+
+<p>The API documentation describes a singleton <code>Campaign</code> class, but the way it is exposed as a global can vary between REX builds. If <code>::campaign</code> is not defined in yours, try <code>::game.campaign</code>, or search the REX documentation and Discord for your version’s accessor. The object you want is the one with the <code>raiseEvent</code>, <code>factionById</code>, <code>factionByName</code>, and <code>settlementByName</code> methods.</p>
+
+<h2>Outro</h2>
+
+<p>Beyond what is covered here, REX Squirrel adds many quality‑of‑life improvements over the old scripting:</p>
+
+<ul>
+  <li>Real functions, so you can refactor repeated logic.</li>
+  <li>Classes and objects that mirror the game’s own data structures (<code>Faction</code>, <code>Settlement</code>, <code>Army</code>, <code>Unit</code>, <code>Character</code>, <code>Region</code>, …).</li>
+  <li>A live API reference in <code>api.d.nut</code>, plus auto‑generated docs from the REX team.</li>
+  <li>Hot script reloading via <code>::game.reloadScripts()</code>, which carries the <code>persistent</code> table across and lets you iterate without restarting the game.</li>
+</ul>
+
+<p>If you are new to Squirrel, start small: register a <code>pluginLoad</code> hook that logs a line, then add a <code>campaignMapLoaded</code> hook that gives the player money, then try a <code>FactionTurnStart</code> handler that reacts to the payload. Before long you will be writing scripts that simply were not possible in the old system.</p>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

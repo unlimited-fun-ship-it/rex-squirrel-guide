@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Player Choice Events — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Player Choice Events — Squirrel Scripting in REX</h1>
+
+<p><em>This tutorial shows you how to create scripted events that present the player with a binary choice, using the REX Community Patch’s Squirrel API. It mirrors the classic <code>message_prompt</code> / <code>ScriptPromptCallback</code> pattern from Rome Remastered, but implemented in Squirrel.</em></p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#intro">Introduction</a></li>
+  <li><a href="#trigger">Step 1 — The trigger</a></li>
+  <li><a href="#reply">Step 2 — Handling the reply</a></li>
+  <li><a href="#full">Full example script</a></li>
+  <li><a href="#tips">Tips and best practices</a></li>
+</ul>
+</div>
+
+<h2 id="intro">Introduction</h2>
+
+<p>In Rome Remastered you can create events that force the player to make a choice before continuing. In REX Squirrel, the same idea is achieved with the <code>raiseEvent</code> method on the campaign object and the <code>EventCounter</code> event.</p>
+
+<p>The flow is:</p>
+<ol>
+  <li><strong>Trigger</strong> – something happens (e.g., a faction’s turn starts) and your conditions are met.</li>
+  <li><strong>Raise the choice</strong> – you call <code>::campaign.raiseEvent(...)</code> with <code>isChoice = true</code>. This shows a message with Accept / Decline buttons. The engine automatically bumps two event counters: <code>&lt;name&gt;_accepted</code> and <code>&lt;name&gt;_declined</code>.</li>
+  <li><strong>Handle the reply</strong> – you listen for the <code>EventCounter</code> event. When the player clicks a button, the corresponding counter changes, and your handler runs.</li>
+  <li><strong>Reset</strong> – you reset the counters so the event can be triggered again in the future (or mark it as done).</li>
+</ol>
+
+<p>This replaces the old <code>declare_counter</code> / <code>message_prompt</code> / <code>ScriptPromptCallback</code> trio.</p>
+
+<hr>
+
+<h2 id="trigger">Step 1 — The Trigger</h2>
+
+<p>We start by listening for a suitable event. For a turn‑based choice, <code>FactionTurnStart</code> is a good candidate.</p>
+
+<pre><code>::events.on("FactionTurnStart", function(payload) {
+    // The payload should contain the faction whose turn it is.
+    // Check the API docs for the exact field name – it may be `faction`.
+    local faction = payload.faction;
+    if (faction == null) return;
+
+    // We only want this for the human Julii player.
+    if (faction.name != "romans_julii") return;
+    if (::game.localFactionId() != faction.id) return;
+
+    // Conditions: event not already done, and a 1% random chance.
+    if (::game.eventCounter("julii_bribe_senators_done") == 1) return;
+    if (rand() % 100 &gt; 0) return;   // 1% chance
+
+    // All conditions met – raise the choice event.
+    ::campaign.raiseEvent(
+        "senate_01",                       // picture name and counter base
+        ::game.text("JULII_BRIBE_TITLE"),  // title text (from expanded_bi.txt)
+        ::game.text("JULII_BRIBE_BODY"),   // body text
+        true,                              // isChoice = true
+        -1, -1,                            // no map position
+        [faction.id]                       // only show to this faction
+    );
+});</code></pre>
+
+<div class="note">
+<strong>Notes</strong>
+<ul>
+  <li><code>::campaign</code> is the global <code>Campaign</code> object. (There is no <code>::game.campaign</code>.)</li>
+  <li><code>::game.text("KEY")</code> looks up a localised string. You can also pass literal strings if you prefer.</li>
+  <li><code>raiseEvent</code> returns <code>true</code> if the message was raised.</li>
+  <li>The <code>name</code> you pass (<code>"senate_01"</code>) becomes the base for the automatic counters: <code>senate_01_accepted</code> and <code>senate_01_declined</code>.</li>
+  <li>We use a separate counter <code>julii_bribe_senators_done</code> to ensure the event only fires once. Event counters are saved with the campaign, which is safer than a plain variable.</li>
+</ul>
+</div>
+
+<h2 id="reply">Step 2 — Handling the Reply</h2>
+
+<p>When the player clicks Accept or Decline, the engine changes the corresponding event counter. We listen for the <code>EventCounter</code> event to react.</p>
+
+<pre><code>::events.on("EventCounter", function(payload) {
+    // The payload contains the counter name and its new value.
+    local counterName = payload.name;
+    local value = payload.value;
+
+    if (counterName == "senate_01_accepted" &amp;&amp; value == 1) {
+        // Player chose Yes.
+        local playerFaction = ::campaign.factionById(::game.localFactionId());
+        if (playerFaction != null) {
+            playerFaction.money -= 20000;
+
+            // inc_counter equivalents:
+            local support = ::game.eventCounter("romans_julii_support");
+            ::game.setEventCounter("romans_julii_support", support + 200);
+
+            local brutii = ::game.eventCounter("romans_brutii_support");
+            ::game.setEventCounter("romans_brutii_support", brutii - 100);
+
+            local scipii = ::game.eventCounter("romans_scipii_support");
+            ::game.setEventCounter("romans_scipii_support", scipii - 100);
+        }
+
+        // Reset the accepted counter and mark the event as done.
+        ::game.setEventCounter("senate_01_accepted", 0);
+        ::game.setEventCounter("julii_bribe_senators_done", 1);
+    }
+    else if (counterName == "senate_01_declined" &amp;&amp; value == 1) {
+        // Player chose No.
+        ::game.setEventCounter("senate_01_declined", 0);
+        ::game.setEventCounter("julii_bribe_senators_done", 1);
+    }
+});</code></pre>
+
+<div class="note">
+<strong>Notes</strong>
+<ul>
+  <li>The <code>EventCounter</code> event fires for <strong>any</strong> counter change, including the ones you set yourself. That’s why we check both the name and the value (<code>== 1</code>). When we reset the counter to <code>0</code>, the event fires again, but the condition fails, so no infinite loop.</li>
+  <li>If the exact payload field names are different, log the payload to see what’s inside:
+    <pre><code>::events.on("EventCounter", function(payload) {
+    ::game.log("EventCounter payload: " + payload);
+});</code></pre>
+  </li>
+  <li>The <code>raiseEvent</code> counters are named <code>&lt;name&gt;_accepted</code> and <code>&lt;name&gt;_declined</code>. Make sure the <code>name</code> you pass to <code>raiseEvent</code> matches the counters you check.</li>
+</ul>
+</div>
+
+<h2 id="full">Full Example Script</h2>
+
+<p>Putting it all together in one file (e.g., <code>player_choice_example.nut</code> inside your mod’s <code>script</code> folder):</p>
+
+<pre><code>// Player Choice Event: Julii Bribe Senators
+
+// 1. Trigger – on Julii turn start, under conditions, raise the choice.
+::events.on("FactionTurnStart", function(payload) {
+    local faction = payload.faction;
+    if (faction == null) return;
+    if (faction.name != "romans_julii") return;
+    if (::game.localFactionId() != faction.id) return;
+
+    if (::game.eventCounter("julii_bribe_senators_done") == 1) return;
+    if (rand() % 100 &gt; 0) return;   // 1% chance
+
+    ::campaign.raiseEvent(
+        "senate_01",
+        ::game.text("JULII_BRIBE_TITLE"),
+        ::game.text("JULII_BRIBE_BODY"),
+        true,
+        -1, -1,
+        [faction.id]
+    );
+});
+
+// 2. Handle the reply.
+::events.on("EventCounter", function(payload) {
+    local counterName = payload.name;
+    local value = payload.value;
+
+    if (counterName == "senate_01_accepted" &amp;&amp; value == 1) {
+        local playerFaction = ::campaign.factionById(::game.localFactionId());
+        if (playerFaction != null) {
+            playerFaction.money -= 20000;
+
+            local support = ::game.eventCounter("romans_julii_support");
+            ::game.setEventCounter("romans_julii_support", support + 200);
+
+            local brutii = ::game.eventCounter("romans_brutii_support");
+            ::game.setEventCounter("romans_brutii_support", brutii - 100);
+
+            local scipii = ::game.eventCounter("romans_scipii_support");
+            ::game.setEventCounter("romans_scipii_support", scipii - 100);
+        }
+
+        ::game.setEventCounter("senate_01_accepted", 0);
+        ::game.setEventCounter("julii_bribe_senators_done", 1);
+    }
+    else if (counterName == "senate_01_declined" &amp;&amp; value == 1) {
+        ::game.setEventCounter("senate_01_declined", 0);
+        ::game.setEventCounter("julii_bribe_senators_done", 1);
+    }
+});</code></pre>
+
+<h2 id="tips">Tips and Best Practices</h2>
+<ul>
+  <li><strong>Check the API docs</strong> – The exact payload field names for events like <code>FactionTurnStart</code> and <code>EventCounter</code> are listed in <code>api.d.nut</code>. If unsure, log the payload to see its contents.</li>
+  <li><strong>Use event counters for state</strong> – They are saved with the campaign, so they survive save/load. Perfect for “done” flags.</li>
+  <li><strong>Avoid infinite loops</strong> – Always check the counter value (<code>== 1</code>) before acting, and reset it to <code>0</code> afterwards.</li>
+  <li><strong>Localisation</strong> – Use <code>::game.text("KEY")</code> to pull strings from <code>expanded_bi.txt</code> (or <code>expanded.txt</code>). This keeps your mod translatable.</li>
+  <li><strong>One event per choice</strong> – Give each choice event a unique <code>name</code> so its automatic counters don’t clash with others.</li>
+  <li><strong>Test with high probability</strong> – While developing, change <code>rand() % 100 &gt; 0</code> to <code>rand() % 100 &gt; 99</code> or just remove the random check so the event fires every turn.</li>
+</ul>
+
+<h2>Congratulations!</h2>
+<p>You have now created a player choice event using REX Squirrel. The player will be presented with a yes/no prompt, and your script reacts to their decision. This is the Squirrel equivalent of the old <code>message_prompt</code> / <code>ScriptPromptCallback</code> system, but with all the power and flexibility of a real scripting language.</p>
+
+<p>Happy scripting!</p>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

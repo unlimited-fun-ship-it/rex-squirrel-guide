@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REX Squirrel Scripting — Home</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body class="home">
+
+<header>
+  <h1>REX Squirrel Scripting</h1>
+  <p>A guide to scripting Rome: Total War with the REX Community Patch — from your first <code>.nut</code> file to state machines, major events, and emergent factions.</p>
+  <span class="banner-note">For modders new to Squirrel, and for those coming from the old RR script syntax.</span>
+</header>
+
+<h2>Start here</h2>
+
+<p class="lead">If you have never written a Squirrel script before, read the Introduction first. It explains what Squirrel is, how REX loads your scripts, and how the event system replaces the old <code>monitor_event</code> machinery. From there, work through the Basic Tools page — it is the reference you will come back to most often.</p>
+
+<div class="grid">
+
+  <a class="card" href="introduction.html">
+    <h3>Introduction to Squirrel in REX</h3>
+    <p>What Squirrel is, how scripts are loaded, the difference between lifecycle hooks and event handlers, and how the old RR concepts map onto the new language.</p>
+    <span class="filename">introduction.html</span>
+    <div class="tags">
+      <span>start here</span>
+      <span>overview</span>
+    </div>
+  </a>
+
+  <a class="card" href="basic-tools.html">
+    <h3>Basic Tools</h3>
+    <p>Events, conditions, commands, loops, counters, and the Yes/No player prompt — the everyday building blocks, with side‑by‑side translations from the old RR syntax.</p>
+    <span class="filename">basic-tools.html</span>
+    <div class="tags">
+      <span>reference</span>
+      <span>events</span>
+      <span>counters</span>
+    </div>
+  </a>
+
+</div>
+
+<h2>Patterns and algorithms</h2>
+
+<p class="lead">Once you are comfortable with the basics, these pages collect the reusable patterns that come up again and again: doing something every N turns, picking a weighted random outcome, checking whether a settlement changed hands, and running a scripted sequence turn by turn.</p>
+
+<div class="grid">
+
+  <a class="card" href="useful-algorithms.html">
+    <h3>Useful Algorithms</h3>
+    <p>Small, self‑contained patterns: modulo for periodic events, running something N times, weighted random outcomes, detecting settlement transfers, and one‑shot first‑time setup.</p>
+    <span class="filename">useful-algorithms.html</span>
+    <div class="tags">
+      <span>patterns</span>
+      <span>arithmetic</span>
+      <span>random</span>
+    </div>
+  </a>
+
+  <a class="card" href="state-machines.html">
+    <h3>State Machines</h3>
+    <p>How to run a scripted sequence over many turns — the classic 3‑turns‑per‑year example, and how Squirrel's <code>else if</code> replaces the old <code>set_state</code> trick.</p>
+    <span class="filename">state-machines.html</span>
+    <div class="tags">
+      <span>sequences</span>
+      <span>storylines</span>
+    </div>
+  </a>
+
+</div>
+
+<h2>Engine‑facing scripts</h2>
+
+<p class="lead">Some scripts are read directly by the engine rather than by Squirrel: major events, spawn scripts for emergent factions. They cannot be replaced by Squirrel, but Squirrel can drive them through event counters and hidden resources. These pages explain how, and where the seams are.</p>
+
+<div class="grid">
+
+  <a class="card" href="major-event-scripts.html">
+    <h3>Major Event Scripts</h3>
+    <p>Reforms and other permanent campaign changes. How the activation and deactivation scripts work, and how Squirrel arms them through counters.</p>
+    <span class="filename">major-event-scripts.html</span>
+    <div class="tags">
+      <span>reforms</span>
+      <span>triggers</span>
+    </div>
+  </a>
+
+  <a class="card" href="emergent-factions.html">
+    <h3>Emergent Factions</h3>
+    <p>Setting up a faction that appears mid‑campaign — <code>descr_sm_factions.txt</code>, <code>descr_strat.txt</code>, the spawn script, and the counter or resource bridge from Squirrel.</p>
+    <span class="filename">emergent-factions.html</span>
+    <div class="tags">
+      <span>spawn scripts</span>
+      <span>revolts</span>
+    </div>
+  </a>
+
+</div>
+
+<h2>Advanced topics</h2>
+
+<div class="grid">
+
+  <a class="card" href="player-choice-events.html">
+    <h3>Player Choice Events</h3>
+    <p>Yes/No prompts the player must answer before the turn can proceed — the Squirrel replacement for <code>message_prompt</code> and <code>ScriptPromptCallback</code>.</p>
+    <span class="filename">player-choice-events.html</span>
+    <div class="tags">
+      <span>prompts</span>
+      <span>UI</span>
+      <span>raiseEvent</span>
+    </div>
+  </a>
+
+</div>
+
+<div class="steps">
+  <h3>How to use these pages offline</h3>
+  <ol>
+    <li>Save all files as <code>.html</code>, and keep <code>style.css</code> and <code>navbar.js</code> alongside them.</li>
+    <li>Open <code>index.html</code> in a browser. The links work as long as every file sits in the same folder.</li>
+    <li>To convert a page to a Word document, open it in a browser, then use <strong>File → Save As → Word Document (.docx)</strong>, or open the <code>.html</code> directly in Word.</li>
+    <li>To share the set with other modders, zip the whole folder and hand it over. Nothing here depends on a live server.</li>
+  </ol>
+</div>
+
+<div class="callout">
+  <strong>A note on the API.</strong> The REX Squirrel API is still evolving. Wherever this guide says "check the API docs", it means the generated <code>api.d.nut</code> file that ships with REX — that file is the single authoritative source for event names, payload fields, and object properties. If a page here disagrees with <code>api.d.nut</code>, trust <code>api.d.nut</code>, and please update the page.
+</div>
+
+<footer>
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+  <p>Contributions welcome. If you find an error or want to add a pattern, edit the relevant page directly.</p>
+</footer>
+
+</body>
+</html>

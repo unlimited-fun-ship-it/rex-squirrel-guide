@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emergent Factions — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Emergent Factions — Squirrel Scripting in REX</h1>
+
+<p>An <strong>emergent faction</strong> is a faction that does not exist on the map at the start of the campaign but can appear later, usually in response to a revolt or a specific historical condition. In vanilla Rome: Total War the Roman Empire emerging from the collapse of the four Roman houses is the classic example; Total Conquest and other mods use the same machinery for breakaway states, rebel kingdoms, and scripted “what if” factions.</p>
+
+<p>This page explains how emergent factions are set up, how their spawn scripts work, and how a Squirrel script can influence whether and when they appear.</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#setup-factions">Setup — <code>descr_sm_factions.txt</code></a></li>
+  <li><a href="#setup-strat">Setup — <code>descr_strat.txt</code></a></li>
+  <li><a href="#script">How the spawn script works</a></li>
+  <li><a href="#example">Example — the Roman Empire</a></li>
+  <li><a href="#bridge">Bridging from Squirrel</a></li>
+  <li><a href="#direct">Direct emergence from Squirrel</a></li>
+  <li><a href="#notes">Notes and pitfalls</a></li>
+</ul>
+</div>
+
+<hr>
+
+<h2 id="setup-factions">Setup — <code>descr_sm_factions.txt</code></h2>
+
+<p>The faction must first be declared with an <code>emergence</code> block in <code>descr_sm_factions.txt</code>, placed <em>before</em> the logos section. This block tells the engine what units the emergent faction gets when it appears inside a settlement, and how strong it should be.</p>
+
+<pre><code>"emergence":
+{
+    ;; Units to use if we emerge inside a settlement.
+    "settlement units":
+    [
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+        "roman praetorian cohort i",
+    ],
+    "strength": 1.5,
+},</code></pre>
+
+<ul>
+  <li><code>"settlement units"</code> — the list of units the faction receives when it takes over a settlement. The engine fills the settlement’s garrison with these. The list can be as long or short as you like.</li>
+  <li><code>"strength"</code> — a multiplier applied to the faction’s starting strength. The value here is authoritative for emergent factions; they do not use the normal <code>descr_strat</code> strength.</li>
+</ul>
+
+<h2 id="setup-strat">Setup — <code>descr_strat.txt</code></h2>
+
+<p>In <code>descr_strat.txt</code>, the faction needs a <code>spawn_script</code> line. This tells the engine two things: which script to run, and when to run it.</p>
+
+<pre><code>spawn_script roman_empire, revolt, spawn_scripts/roman_empire.txt</code></pre>
+
+<ul>
+  <li><strong>First argument</strong> — the faction’s internal name (<code>roman_empire</code>). Must match the name used in <code>descr_sm_factions.txt</code>.</li>
+  <li><strong>Second argument</strong> — either <code>revolt</code> or <code>end_of_turn</code>:
+    <ul>
+      <li><code>revolt</code> — the script runs whenever a settlement revolts. The engine exports the revolting settlement’s details to the script.</li>
+      <li><code>end_of_turn</code> — the script runs at the end of every turn, regardless of revolts.</li>
+    </ul>
+  </li>
+  <li><strong>Third argument</strong> — the path to the spawn script, relative to the campaign folder.</li>
+</ul>
+
+<h2 id="script">How the spawn script works</h2>
+
+<p>The spawn script is written in the old RR script syntax (<code>script … end_script</code>), not Squirrel. It must return either <code>true</code> or <code>false</code>:</p>
+
+<ul>
+  <li><code>return true</code> — the faction emerges now.</li>
+  <li><code>return false</code> — the faction does not emerge this time.</li>
+</ul>
+
+<p>When the spawn fires, the engine places the faction’s army at the settlement that triggered it (for <code>revolt</code>) or at a location the script arranges (for <code>end_of_turn</code>), using the units from the <code>emergence</code> block.</p>
+
+<h2 id="example">Example — the Roman Empire</h2>
+
+<p>The classic scenario: the Roman Empire emerges from Rome when one of the Roman houses collapses, provided at least two of the others are already gone.</p>
+
+<pre><code>script
+    if not FactionIsAlive roman_empire
+        &amp;&amp; SettlementName Rome
+
+        if SettlementRevoltingFrom romans_julii
+            &amp;&amp; not FactionIsAlive romans_senate
+            &amp;&amp; not FactionIsAlive romans_scipii
+            &amp;&amp; not FactionIsAlive romans_brutii
+            return true
+        end_if
+        if SettlementRevoltingFrom romans_scipii
+            &amp;&amp; not FactionIsAlive romans_senate
+            &amp;&amp; not FactionIsAlive romans_julii
+            &amp;&amp; not FactionIsAlive romans_brutii
+            return true
+        end_if
+        if SettlementRevoltingFrom romans_brutii
+            &amp;&amp; not FactionIsAlive romans_senate
+            &amp;&amp; not FactionIsAlive romans_julii
+            &amp;&amp; not FactionIsAlive romans_scipii
+            return true
+        end_if
+    end_if
+    ;; else don't spawn
+    return false
+end_script</code></pre>
+
+<p>Reading it in plain English:</p>
+
+<ol>
+  <li>If the Roman Empire is not already alive, and the settlement that revolted is Rome, then:</li>
+  <li>Check which Roman house the settlement is revolting from.</li>
+  <li>If that house’s revolt happens while the other two are already dead (and the Senate is gone), return true.</li>
+  <li>Otherwise, return false.</li>
+</ol>
+
+<h2 id="bridge">Bridging from Squirrel</h2>
+
+<p>Just like major event scripts, <strong>spawn scripts cannot call into Squirrel directly</strong>. They are read and executed by the engine, one turn (or one revolt) at a time. And just like major event scripts, they can be influenced through the shared engine state:</p>
+
+<ol>
+  <li><strong>Event counters</strong> — Squirrel writes them with <code>::game.setEventCounter</code>; the spawn script reads them with <code>I_CompareCounter</code>.</li>
+  <li><strong>Hidden resources</strong> — Squirrel writes them with <code>Region.setHiddenResource</code>; the spawn script reads them with <code>HasResource</code>.</li>
+  <li><strong>Live game state</strong> — anything the spawn script can already see (faction alive/dead, settlement ownership, resources, buildings, turn number) can be steered by Squirrel through the game API.</li>
+</ol>
+
+<h3>Example — emerge once a Squirrel flag is set</h3>
+
+<p><strong>Squirrel side:</strong></p>
+
+<pre><code>// Make sure the counter exists before the spawn script looks at it.
+::events.on("campaignMapLoaded", function() {
+    if (::game.eventCounter("empire_ready") == null) {
+        ::game.setEventCounter("empire_ready", 0);
+    }
+});
+
+// Some game event that arms the emergence.
+::events.on("GeneralCaptureSettlement", function(payload) {
+    local s = payload.settlement;
+    if (s == null) return;
+    if (s.name != "Rome") return;
+
+    // The trigger condition has been met.
+    ::game.setEventCounter("empire_ready", 1);
+    ::game.log("Emergent faction is now armed to appear.");
+});</code></pre>
+
+<p><strong>Spawn script (in <code>spawn_scripts/roman_empire.txt</code>):</strong></p>
+
+<pre><code>script
+    if not FactionIsAlive roman_empire
+        &amp;&amp; I_CompareCounter empire_ready = 1
+        &amp;&amp; SettlementName Rome
+
+        ;; Only emerge from a revolt against a Roman house.
+        if SettlementRevoltingFrom romans_julii
+            return true
+        end_if
+        if SettlementRevoltingFrom romans_scipii
+            return true
+        end_if
+        if SettlementRevoltingFrom romans_brutii
+            return true
+        end_if
+    end_if
+    return false
+end_script</code></pre>
+
+<div class="note">
+<strong>Why this works.</strong> <code>::game.setEventCounter</code> writes to the same counter table that <code>I_CompareCounter</code> reads, and it is saved with the campaign — so the flag persists across save/load. This is the recommended bridge for emergent factions.
+</div>
+
+<h3>Example — <code>end_of_turn</code> emergence with a hidden‑resource flag</h3>
+
+<p><strong>Squirrel side:</strong></p>
+
+<pre><code>::events.on("GeneralCaptureSettlement", function(payload) {
+    local s = payload.settlement;
+    if (s == null || s.name != "Rome") return;
+
+    s.region.setHiddenResource("empire_ready", true);
+});
+
+// Hidden resources are not saved — re‑apply on load.
+::events.on("campaignMapLoaded", function() {
+    local rome = ::stratMap.findSettlement("Rome");
+    if (rome == null) return;
+
+    local julii  = ::campaign.factionByName("romans_julii");
+    local brutii = ::campaign.factionByName("romans_brutii");
+    local scipii = ::campaign.factionByName("romans_scipii");
+
+    // Example condition: two of the three houses are gone.
+    local dead = 0;
+    if (julii == null)  dead += 1;
+    if (brutii == null) dead += 1;
+    if (scipii == null) dead += 1;
+
+    if (dead &gt;= 2) {
+        rome.region.setHiddenResource("empire_ready", true);
+    }
+});</code></pre>
+
+<p><strong>Spawn script:</strong></p>
+
+<pre><code>script
+    if not FactionIsAlive roman_empire
+        for_each settlement in world
+            if HasResource empire_ready
+                return true
+            end_if
+        end_for
+    end_if
+    return false
+end_script</code></pre>
+
+<h2 id="direct">Direct emergence from Squirrel</h2>
+
+<p>In some REX builds you may be able to emerge a faction directly from Squirrel, bypassing the spawn script entirely. The <code>Faction</code> class exposes a writable <code>status</code> property:</p>
+
+<ul>
+  <li><code>0</code> — alive.</li>
+  <li><code>1</code> — death pending.</li>
+  <li><code>2</code> — dead.</li>
+  <li><code>3</code> — dead until resurrected.</li>
+  <li><code>4</code> — dead until emerged (Medieval II only).</li>
+</ul>
+
+<p>If your build exposes the emergent status, you can transition a dead faction back into play:</p>
+
+<pre><code>::events.on("GeneralCaptureSettlement", function(payload) {
+    local s = payload.settlement;
+    if (s == null || s.name != "Rome") return;
+
+    local empire = ::campaign.factionByName("roman_empire");
+    if (empire == null) return;
+    if (empire.status != 4) return;   // only if currently "dead until emerged"
+
+    // Hand the settlement to the emergent faction.
+    s.owner = empire;
+
+    // Spawn a garrison for it, using the units the emergence block
+    // in descr_sm_factions.txt declares.
+    local army = s.createGarrisonArmy();
+    if (army != null) {
+        army.createUnit("roman praetorian cohort i", 0, 0, 0, -1);
+        army.createUnit("roman praetorian cohort i", 0, 0, 0, -1);
+        army.createUnit("roman praetorian cohort i", 0, 0, 0, -1);
+    }
+});</code></pre>
+
+<div class="warning">
+<strong>This is not a full replacement for the spawn script.</strong> Emergence involves more than a status flag and a garrison — the engine fires a set of internal triggers, updates the faction list, redraws the minimap, and notifies the AI. Doing it by hand can leave the campaign in an inconsistent state. Use the spawn script as the primary mechanism and treat direct emergence as a fallback for builds that support it.
+</div>
+
+<h2 id="notes">Notes and pitfalls</h2>
+
+<ul>
+  <li><strong>The spawn script is engine‑only.</strong> Squirrel cannot replace it. It can only influence the conditions the script reads.</li>
+  <li><strong><code>revolt</code> vs <code>end_of_turn</code>.</strong> Choose carefully. <code>revolt</code> gives you context about which settlement revolted and from whom; <code>end_of_turn</code> gives you a chance to check any world condition you like, but has no revolt context.</li>
+  <li><strong>Counters must exist before the spawn script reads them.</strong> Initialise any counter in a <code>campaignMapLoaded</code> handler.</li>
+  <li><strong>Hidden resources are not saved.</strong> They are rebuilt from <code>descr_regions</code> on load. Re‑apply them on <code>campaignMapLoaded</code> if they need to persist.</li>
+  <li><strong>Return true stops the script.</strong> The first <code>return true</code> in the spawn script exits it immediately. Everything after it — including the fallback <code>return false</code> — is skipped.</li>
+  <li><strong>Do not edit the vanilla spawn scripts directly.</strong> Copy the script into your mod and reference it from your own <code>descr_strat.txt</code>.</li>
+  <li><strong>Test emergence with a fresh campaign.</strong> Emergence state is baked into the campaign save at start.</li>
+  <li><strong>The <code>emergence</code> block is read at load.</strong> Its unit list and strength are fixed when the campaign is loaded, so changes require a restart.</li>
+</ul>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

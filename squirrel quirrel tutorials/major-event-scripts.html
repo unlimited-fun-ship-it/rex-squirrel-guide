@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Major Event Scripts — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Major Event Scripts — Squirrel Scripting in REX</h1>
+
+<p>Major events — the engine calls them <strong>reforms</strong>, though they are used for much more than the Marian Reforms — are scripted conditions that permanently alter the campaign once they fire. They are checked every turn, and the moment the condition returns true, the event activates and its <code>deactivate</code> script (if any) takes over.</p>
+
+<p>This page explains how major event scripts work in REX, and — the interesting part — how a Squirrel script can <em>feed</em> them, so that the trigger condition depends on anything Squirrel can observe.</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#what">What is a major event script?</a></li>
+  <li><a href="#how">How they work</a></li>
+  <li><a href="#bridge">Bridging from Squirrel</a></li>
+  <li><a href="#example">Worked example — spy missions trigger a reform</a></li>
+  <li><a href="#notes">Notes and pitfalls</a></li>
+</ul>
+</div>
+
+<hr>
+
+<h2 id="what">What is a major event script?</h2>
+
+<p>A major event has up to two scripts attached:</p>
+
+<ul>
+  <li>An <strong>activation</strong> script — checked every turn. If it returns true, the event fires.</li>
+  <li>A <strong>deactivation</strong> script — optional; checked every turn once the event has fired. If it returns true, the event is undone.</li>
+</ul>
+
+<p>Both live in <code>data/major_event_scripts/</code> and are referenced from <code>descr_sm_major_events.txt</code>. They are written in the <em>old</em> RR script syntax (<code>script … end_script</code>), not in Squirrel — the engine reads them directly, one turn at a time. Squirrel cannot replace them; it can only <em>influence</em> them.</p>
+
+<h2 id="how">How they work</h2>
+
+<p>Every turn, the engine runs the activation script. The script must <code>return true</code> or <code>return false</code>:</p>
+
+<ul>
+  <li><code>return true</code> — fire the major event.</li>
+  <li><code>return false</code> — do nothing this turn; the event stays inactive.</li>
+</ul>
+
+<p>Here is the vanilla Marian Reforms activation script, as an example:</p>
+
+<pre><code>script
+    ;; Check every settlement in the world.
+    for_each settlement in world
+        if HasResource italy                                 ;; has the italy hidden resource
+            &amp;&amp; I_SettlementLevel local &gt;= huge_city          ;; is a huge city
+            &amp;&amp; I_SettlementOwnerCulture local == roman       ;; the owner is Roman
+            &amp;&amp; not SettlementName Rome                       ;; the settlement isn't Rome
+
+            return true   ;; trigger Marian Reforms
+        end_if
+    end_for
+
+    return false   ;; don't trigger Marian Reforms
+end_script</code></pre>
+
+<p>Notice the shape of this:</p>
+
+<ul>
+  <li>Inside the loop, <code>return true</code> exits the whole script immediately — so the first qualifying settlement wins.</li>
+  <li>If the loop finishes without returning, the script falls through to <code>return false</code> at the bottom.</li>
+  <li>There is no state kept between turns: the script simply re‑evaluates from scratch every time it runs.</li>
+</ul>
+
+<div class="note">
+<strong>Why does <code>return false</code> at the end work?</strong> When <code>return</code> is executed, the script stops there. So the outer <code>return false</code> is only reached if no earlier <code>return true</code> fired inside the loop. It is effectively the “nothing matched” fallback.
+</div>
+
+<h2 id="bridge">Bridging from Squirrel</h2>
+
+<p>Here is the catch: <strong>major event scripts cannot read Squirrel state directly</strong>. They cannot call into Squirrel, and Squirrel cannot hand them a <code>persistent</code> table entry or a live object reference. The two worlds only meet through the engine’s own shared data, and there are two shared things you can use:</p>
+
+<ol>
+  <li><strong>Event counters</strong> — the classic counters. Squirrel writes them with <code>::game.setEventCounter</code>; the major event script reads them with <code>I_CompareCounter</code>.</li>
+  <li><strong>Hidden resources</strong> — per‑region flags. Squirrel writes them with <code>Region.setHiddenResource</code>; the major event script reads them with <code>HasResource</code>.</li>
+</ol>
+
+<p>Both are checked by the engine every turn, so both are visible to a major event script. Which to use depends on what you are tracking:</p>
+
+<table>
+  <thead>
+    <tr><th>Approach</th><th>Good for</th><th>Watch out for</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Event counter</td>
+      <td>A single numeric value — “more than 5 spy missions”, “more than 100000 denarii spent”.</td>
+      <td>The counter must exist before the major event script looks at it. Set it once at campaign load.</td>
+    </tr>
+    <tr>
+      <td>Hidden resource</td>
+      <td>A boolean flag — “this specific thing has happened”, “the trigger is armed”.</td>
+      <td>Hidden resources set at runtime are <strong>not saved</strong>; they are rebuilt from <code>descr_regions</code> on load, so Squirrel must re‑apply them on <code>campaignMapLoaded</code>.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warning">
+<strong>What about <code>persistent</code>?</strong> A <code>persistent</code> table survives a script reload, but it is <em>not</em> the engine’s counter table and major event scripts cannot see it. Do not try to bridge through <code>persistent</code>. Use event counters (saved with the campaign) or hidden resources.
+</div>
+
+<h2 id="example">Worked example — spy missions trigger a reform</h2>
+
+<p>We want a reform to fire when the Julii have completed more than 5 spy missions. The Squirrel side counts the missions; the major event script reads the count and returns true once it crosses the threshold.</p>
+
+<h3>The Squirrel side (in your mod’s <code>script</code> folder)</h3>
+
+<pre><code>// Make sure the counter exists before the major event script looks at it.
+::events.on("campaignMapLoaded", function() {
+    if (::game.eventCounter("spy_missions") == null) {
+        ::game.setEventCounter("spy_missions", 0);
+    }
+});
+
+// Count the Julii spy missions.
+::events.on("SpyMission", function(payload) {
+    local faction = payload.faction;
+    if (faction == null) return;
+    if (faction.name != "romans_julii") return;
+
+    local count = ::game.eventCounter("spy_missions");
+    if (count == null) count = 0;
+    ::game.setEventCounter("spy_missions", count + 1);
+
+    ::game.log("Julii spy missions: " + (count + 1));
+});</code></pre>
+
+<h3>The major event script (in <code>data/major_event_scripts/</code>)</h3>
+
+<pre><code>script
+    if I_CompareCounter spy_missions &gt; 5
+        return true
+    end_if
+    return false
+end_script</code></pre>
+
+<p>That is all. Once the Squirrel handler has bumped <code>spy_missions</code> past 5, the major event script will return true on its next turn, and the reform fires.</p>
+
+<div class="note">
+<strong>Why this works.</strong> <code>::game.setEventCounter</code> goes through the engine’s own command system, writing to the same counter table that <code>I_CompareCounter</code> reads.
+</div>
+
+<h3>The hidden‑resource variant</h3>
+
+<p>If for any reason the counter approach does not work in your build, the hidden‑resource trick is the fallback. Set an unclaimed resource flag on a settlement, and have the major event script check it.</p>
+
+<p>Squirrel side:</p>
+
+<pre><code>::events.on("SpyMission", function(payload) {
+    local faction = payload.faction;
+    if (faction == null || faction.name != "romans_julii") return;
+
+    local count = ::game.eventCounter("spy_missions");
+    if (count == null) count = 0;
+    count += 1;
+    ::game.setEventCounter("spy_missions", count);
+
+    if (count &gt; 5) {
+        // Set our flag on some known settlement. Any settlement will do;
+        // the major event script only cares that the resource is set.
+        local anchor = ::stratMap.findSettlement("Rome");
+        if (anchor != null) {
+            anchor.region.setHiddenResource("spy_reform_ready", true);
+        }
+    }
+});
+
+// Hidden resources are not saved — re‑apply on load.
+::events.on("campaignMapLoaded", function() {
+    local count = ::game.eventCounter("spy_missions");
+    if (count != null &amp;&amp; count &gt; 5) {
+        local anchor = ::stratMap.findSettlement("Rome");
+        if (anchor != null) {
+            anchor.region.setHiddenResource("spy_reform_ready", true);
+        }
+    }
+});</code></pre>
+
+<p>Major event script side:</p>
+
+<pre><code>script
+    for_each settlement in world
+        if HasResource spy_reform_ready
+            return true
+        end_if
+    end_for
+    return false
+end_script</code></pre>
+
+<p>The <code>spy_reform_ready</code> resource has to be declared in <code>descr_regions.txt</code> (or the equivalent resource list) so the engine will recognise the name. It does not have to be assigned to any region by default — it starts unset everywhere and Squirrel turns it on.</p>
+
+<h2 id="notes">Notes and pitfalls</h2>
+
+<ul>
+  <li><strong>Major event scripts run every turn.</strong> They re‑evaluate from scratch. There is no “fire once” state on the script itself — the engine remembers whether the event has fired, and stops calling the activation script once it has.</li>
+  <li><strong>They cannot read Squirrel state directly.</strong> Everything must flow through shared engine data: event counters, hidden resources, or the existing game state (ownership, buildings, etc.).</li>
+  <li><strong>Counters must exist before the script looks at them.</strong> If the major event script tests <code>I_CompareCounter spy_missions</code> before Squirrel has ever called <code>::game.setEventCounter("spy_missions", …)</code>, the result is undefined. Initialise the counter in a <code>campaignMapLoaded</code> handler.</li>
+  <li><strong>Hidden resources are not saved.</strong> <code>Region.setHiddenResource</code> edits the live region, but the change is rebuilt from <code>descr_regions</code> on load. Re‑apply the flag on <code>campaignMapLoaded</code>.</li>
+  <li><strong>Return true stops the script.</strong> In the major event script, the first <code>return true</code> exits immediately. Anything after it — including the fallback <code>return false</code> — never runs.</li>
+  <li><strong>Keep the trigger cheap.</strong> The script runs every turn for the whole campaign. Prefer an event counter comparison at the top over a full world scan, unless the scan is genuinely what you need.</li>
+  <li><strong>The deactivate script is symmetric.</strong> It uses the same <code>return true</code> / <code>return false</code> shape, and it also runs every turn once the event is active. Bridge to it the same way.</li>
+  <li><strong>Do not edit the vanilla major event scripts.</strong> Override them with your mod’s own versions in <code>descr_sm_major_events.txt</code>, so you do not break other mods and so your changes are tracked.</li>
+</ul>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Basic Tools — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>Basic Tools — Squirrel Scripting in REX</h1>
+
+<p>The basic tools to write a Squirrel script are <strong>Events</strong>, <strong>Conditions</strong>, and <strong>Commands</strong>. In the old RR scripting these were three separate concepts with their own syntax and their own reference lists. In Squirrel they collapse into one idea: everything is code.</p>
+
+<ul>
+  <li><strong>Events</strong> are registered with <code>::events.on(name, handler)</code>.</li>
+  <li><strong>Conditions</strong> are ordinary <code>if</code> statements.</li>
+  <li><strong>Commands</strong> are ordinary function or method calls on game objects.</li>
+</ul>
+
+<p>There is no separate list of commands, conditions, and events in the way RR had. The single reference for everything you can do is <strong><code>api.d.nut</code></strong> — the generated API documentation that ships with REX. It lists every global table (<code>::game</code>, <code>::stratMap</code>, <code>::ui</code>, <code>::events</code>, <code>::campaignDb</code>, <code>::buildings</code>, …), every class (<code>Faction</code>, <code>Settlement</code>, <code>Army</code>, <code>Character</code>, <code>Unit</code>, <code>Region</code>, …), and every event name. Treat it as the equivalent of RR’s four documentation files, all rolled into one.</p>
+
+<p>For a quick look at the event names without opening the file, search <code>api.d.nut</code> for the <code>::events</code> table — the trigger events are listed as one‑line comments (<code>// FactionTurnStart</code>, <code>// BuildingCompleted</code>, <code>// CharacterTurnEnd</code>, and so on).</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#events-on">::events.on — the replacement for monitor_event</a></li>
+  <li><a href="#conditions">Conditions</a></li>
+  <li><a href="#terminate">“Terminating” a handler</a></li>
+  <li><a href="#monitor-conditions">monitor_conditions — the replacement</a></li>
+  <li><a href="#loops">Loops (for_each)</a></li>
+  <li><a href="#console-command">console_command</a></li>
+  <li><a href="#counters">Counters</a></li>
+  <li><a href="#parentheses">Combining conditions with parentheses</a></li>
+  <li><a href="#yesno">Yes/No events for the player</a></li>
+  <li><a href="#where">Where handlers may live</a></li>
+  <li><a href="#summary">Summary</a></li>
+</ul>
+</div>
+
+<hr>
+
+<h2 id="events-on">Frequently Used Patterns</h2>
+
+<h3><code>::events.on</code> — the replacement for <code>monitor_event</code></h3>
+
+<p>This is the workhorse. It registers a handler function that runs whenever the named event fires.</p>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    // code that runs whenever a new turn begins
+});</code></pre>
+
+<ul>
+  <li>The first argument is the event name — the same names RR used (<code>NewTurnStart</code>, <code>BuildingCompleted</code>, <code>CharacterTurnEnd</code>, <code>CityRebels</code>, …).</li>
+  <li>The second argument is a function. REX calls it whenever the event fires.</li>
+  <li>The function receives a <code>payload</code> object whose fields depend on the event. Read the fields you need off it by name. If unsure, log the payload:</li>
+</ul>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    ::game.log("Payload: " + payload);
+});</code></pre>
+
+<p>Unlike <code>monitor_event</code>, there is <strong>no <code>end_monitor</code></strong>. The handler is a normal function — it ends when the function ends.</p>
+
+<h3 id="conditions">Conditions</h3>
+
+<p>There is no <code>and</code> keyword and no condition list. Any check you would have written as <code>monitor_event ... and I_CompareCounter ... and RandomPercent &lt;= 5</code> becomes a plain <code>if</code>:</p>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    local counter = ::game.eventCounter("a_counter");
+    if (counter == null) counter = 0;
+
+    ::game.setEventCounter("a_counter", counter + 1);
+    if (counter + 1 &gt; 5) {
+        // terminate_monitor equivalent — see below
+    }
+});</code></pre>
+
+<p>You can call the same helper functions old scripts used, via <code>::game</code>:</p>
+
+<table>
+  <thead>
+    <tr><th>Old RR condition</th><th>Squirrel equivalent</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>I_CompareCounter x = y</code></td><td><code>::game.eventCounter("x") == y</code></td></tr>
+    <tr><td><code>I_TurnNumber &gt; 5</code></td><td><code>::game.eventCounter("turn_number") &gt; 5</code></td></tr>
+    <tr><td><code>I_LocalFaction romans_julii</code></td><td>compare <code>::game.localFactionId()</code> with the faction’s id</td></tr>
+    <tr><td><code>FactionIsAlive romans_julii</code></td><td>look the faction up and check it is not <code>null</code></td></tr>
+    <tr><td><code>SettlementBuildingExists = x</code></td><td><code>settlement.buildingOfChain("x") != null</code></td></tr>
+    <tr><td><code>RandomPercent &lt;= 5</code></td><td><code>rand() % 100 &lt; 5</code></td></tr>
+  </tbody>
+</table>
+
+<h3 id="terminate">“Terminating” a handler</h3>
+
+<p>RR had <code>terminate_monitor</code> to stop a monitor from firing again. Squirrel has no such thing — a handler function is registered once and stays registered. To stop it from doing anything, guard it with a flag:</p>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    if (::game.eventCounter("my_monitor_done") == 1) return;
+
+    // ... do the work ...
+
+    ::game.setEventCounter("my_monitor_done", 1);
+});</code></pre>
+
+<p>Or, if you want the handler gone entirely (saves a small amount of per‑event overhead), you can keep a reference to the function and remove it — but the simple guard above is the recommended pattern and what most mods use.</p>
+
+<h3 id="monitor-conditions"><code>monitor_conditions</code> — the replacement</h3>
+
+<p>RR’s <code>monitor_conditions</code> polled a condition on every tick. The direct Squirrel equivalent is a handler on a tick event:</p>
+
+<pre><code>::events.on("campaignTick", function(payload) {
+    if (::game.eventCounter("a_counter") &lt;= 5) return;
+
+    // ... condition met, do the work ...
+});</code></pre>
+
+<div class="warning">
+<strong>Be careful</strong> with <code>campaignTick</code> and <code>battleTick</code> — they fire many times per second. Do not do heavy work in them.
+</div>
+
+<hr>
+
+<h2 id="loops">Loops (<code>for_each</code>)</h2>
+
+<p>RR’s <code>for_each … end_for</code> loop iterated over a game list (settlements, units, factions, characters, armies, forts, regions). In Squirrel you use a normal <code>for</code> loop, and you read the list off the object that owns it.</p>
+
+<p>RR example — count every Julii settlement that has the <code>italy</code> resource:</p>
+
+<pre><code>for_each settlement in faction "romans_julii"
+  if HasResource italy
+    inc_counter a_counter 1
+  end_if
+end_for</code></pre>
+
+<p>Squirrel equivalent:</p>
+
+<pre><code>local julii = ::campaign.factionByName("romans_julii");
+if (julii != null) {
+    for (local i = 0; i &lt; julii.settlementCount; i++) {
+        local s = julii.settlement(i);
+        if (s == null) continue;
+        if (s.region.hasHiddenResource("italy")) {
+            local c = ::game.eventCounter("a_counter");
+            ::game.setEventCounter("a_counter", c + 1);
+        }
+    }
+}</code></pre>
+
+<p>Or, using the region’s own list:</p>
+
+<pre><code>for (local i = 0; i &lt; ::stratMap.regionCount(); i++) {
+    local r = ::stratMap.region(i);
+    if (r == null) continue;
+    if (r.faction == null || r.faction.name != "romans_julii") continue;
+    if (r.hasHiddenResource("italy")) {
+        local c = ::game.eventCounter("a_counter");
+        ::game.setEventCounter("a_counter", c + 1);
+    }
+}</code></pre>
+
+<h3>Iterating common lists</h3>
+
+<table>
+  <thead>
+    <tr><th>Old RR iterator</th><th>Squirrel path</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Settlements of a faction</td><td>loop <code>faction.settlementCount</code> / <code>faction.settlement(i)</code></td></tr>
+    <tr><td>Settlements on the map</td><td>loop <code>::game.settlementCount()</code> / <code>::game.settlement(i)</code></td></tr>
+    <tr><td>Regions on the map</td><td>loop <code>::stratMap.regionCount()</code> / <code>::stratMap.region(i)</code></td></tr>
+    <tr><td>Characters of a faction</td><td>loop <code>faction.characterCount</code> / <code>faction.character(i)</code></td></tr>
+    <tr><td>Armies of a faction</td><td>loop <code>faction.armyCount</code> / <code>faction.army(i)</code></td></tr>
+    <tr><td>Units of an army</td><td>loop <code>army.unitCount</code> / <code>army.unit(i)</code></td></tr>
+    <tr><td>Forts of a faction</td><td>loop <code>faction.fortCount</code> / <code>faction.fort(i)</code></td></tr>
+  </tbody>
+</table>
+
+<h3>The <code>local</code> keyword</h3>
+
+<p>RR used <code>local</code> (or <code>local_settlement</code>, <code>local_faction</code>, etc.) to refer to the current iteration of a <code>for_each</code> loop. In Squirrel there is no <code>local</code> — you simply keep a reference to the object you are iterating. The variable you assigned is the “local” object:</p>
+
+<pre><code>for (local i = 0; i &lt; faction.settlementCount; i++) {
+    local settlement = faction.settlement(i);   // <-- this is your "local"
+    if (settlement == null) continue;
+
+    // do stuff with `settlement`
+}</code></pre>
+
+<p>This is clearer and safer than RR’s <code>local</code>, which could silently refer to the wrong thing if the scope was ambiguous.</p>
+
+<h3>Storing counters on objects</h3>
+
+<p>RR’s <code>store_counter</code> / <code>retrieve_counter</code> let you attach a counter to a settlement, character, unit, or faction. In Squirrel you have two options:</p>
+
+<p><strong>1. Use a native property</strong> if one already exists. For example, <code>Settlement.turnsOwned</code>.</p>
+
+<p><strong>2. Keep your own table</strong> in <code>persistent</code>, keyed by the object’s <code>index</code>. This is the direct replacement for <code>store_counter</code>:</p>
+
+<pre><code>::events.on("pluginLoad", function() {
+    if (!("settlementCounters" in persistent))
+        persistent.settlementCounters &lt;- {};
+});
+
+::events.on("SettlementTurnStart", function(payload) {
+    local s = payload.settlement;
+    local key = s.index;
+
+    if (!(key in persistent.settlementCounters))
+        persistent.settlementCounters[key] &lt;- {};
+
+    local store = persistent.settlementCounters[key];
+    if (!("myCounter" in store)) store.myCounter &lt;- 0;
+    store.myCounter += 1;
+});</code></pre>
+
+<div class="note">
+<strong>Remember:</strong> <code>persistent</code> survives a script reload but <strong>not</strong> a save/load. For data that must persist in the save, use event counters (which the engine serialises) or a native property that is already saved.
+</div>
+
+<hr>
+
+<h2 id="console-command"><code>console_command</code></h2>
+
+<p>RR’s <code>console_command</code> ran a RomeShell command from inside a script. In Squirrel most of those commands have a direct method on the relevant object. Where they do not, you can still call the console verb through <code>::game.runConsoleCommand</code>.</p>
+
+<h3>Preferred: method calls</h3>
+
+<pre><code>// RR:
+// console_command add_money romans_julii 1000
+
+local julii = ::campaign.factionByName("romans_julii");
+if (julii != null) julii.money += 1000;</code></pre>
+
+<pre><code>// RR:
+// console_command create_unit "Rome" "roman hastati" 4 0 0 0
+
+local rome = ::stratMap.findSettlement("Rome");
+if (rome != null) {
+    local army = rome.createGarrisonArmy();
+    if (army != null) {
+        army.createUnit("roman hastati", 4, 0, 0, -1);
+    }
+}</code></pre>
+
+<pre><code>// RR:
+// console_command kill_character "Julius"
+
+local c = ::campaign.findCharacterByLabel("Julius");
+if (c != null) c.kill();</code></pre>
+
+<h3>Fallback: runConsoleCommand</h3>
+
+<p>If a verb has no method equivalent (or you are porting an old script and want a quick translation), use <code>::game.runConsoleCommand</code>:</p>
+
+<pre><code>::game.runConsoleCommand("add_money", "romans_julii 1000");</code></pre>
+
+<div class="warning">
+<strong>Use this sparingly.</strong> Console commands bypass the object model and are harder to debug. If a proper method exists, prefer it.
+</div>
+
+<hr>
+
+<h2 id="counters">Counters</h2>
+
+<p>Counters still exist in REX and are serialised with the campaign. There is one kind now — the persistent counter from RR — because REX does not have the old “regular counter that dies on reload” distinction. Every counter written through <code>::game.setEventCounter</code> is saved.</p>
+
+<h3>Declaring, reading, writing</h3>
+
+<pre><code>// Read (null if it doesn't exist yet).
+local value = ::game.eventCounter("a_counter");
+
+// Write (creates the counter if absent).
+::game.setEventCounter("a_counter", 3);
+
+// Increment.
+::game.setEventCounter("a_counter", value + 5);
+
+// Decrement.
+::game.setEventCounter("a_counter", value - 1);</code></pre>
+
+<h3>Operations</h3>
+
+<p>RR had <code>counter_operation</code> to do arithmetic between counters. In Squirrel this is just arithmetic:</p>
+
+<pre><code>local resultCounter = ::game.eventCounter("counter_1")
+                   + ::game.eventCounter("counter_2");
+::game.setEventCounter("result_counter", resultCounter);</code></pre>
+
+<p>Because you are operating on plain integers, you can mix in literals freely — there is no need to declare a “three” counter as RR required:</p>
+
+<pre><code>local c = ::game.eventCounter("a_counter");
+::game.setEventCounter("result_counter", c + 3);</code></pre>
+
+<h3>Comparison</h3>
+
+<p>RR’s <code>I_CompareCounter</code> becomes a plain comparison, and you can compare two counters directly:</p>
+
+<pre><code>if (::game.eventCounter("a_counter") == 3) {
+    // ...
+}
+
+if (::game.eventCounter("counter_1") &gt; ::game.eventCounter("counter_2")) {
+    // ...
+}</code></pre>
+
+<hr>
+
+<h2 id="parentheses">Combining conditions with parentheses</h2>
+
+<p>RR used <code>and</code>, <code>or</code>, and parentheses to combine conditions. Squirrel uses the standard C operators <code>&amp;&amp;</code> (and) and <code>||</code> (or), with the same parentheses rules — and no ambiguity, because the precedence of <code>&amp;&amp;</code> over <code>||</code> is fixed by the language.</p>
+
+<p>RR examples, translated:</p>
+
+<pre><code>// All conditions must be met.
+if (unit.type.name == "roman hastati"
+    &amp;&amp; ::game.eventCounter("turn_number") == 1
+    &amp;&amp; settlement.name == "Rome") {
+    // ...
+}</code></pre>
+
+<pre><code>// Any condition will do.
+if (unit.type.name == "roman hastati"
+    || ::game.eventCounter("turn_number") == 1
+    || settlement.name == "Rome") {
+    // ...
+}</code></pre>
+
+<pre><code>// Mixed — parentheses remove ambiguity, just as in RR.
+if (unit.type.name == "roman hastati"
+    &amp;&amp; (::game.eventCounter("turn_number") == 1
+        || settlement.name == "Rome")) {
+    // Hastati AND (turn 1 OR Rome)
+}</code></pre>
+
+<pre><code>if (settlement.name == "Rome"
+    || (::game.eventCounter("turn_number") == 1
+        &amp;&amp; unit.type.name == "roman hastati")) {
+    // Rome OR (turn 1 AND hastati)
+}</code></pre>
+
+<div class="note">
+<strong>Precedence:</strong> <code>&amp;&amp;</code> binds tighter than <code>||</code>, so <code>a || b &amp;&amp; c</code> means <code>a || (b &amp;&amp; c)</code>. When in doubt, add parentheses. It costs nothing and reads better.
+</div>
+
+<hr>
+
+<h2 id="yesno">Yes/No events for the player</h2>
+
+<p>RR’s <code>message_prompt</code> command paired with the <code>ScriptPromptCallback</code> event let a script ask the player a yes/no question. In REX this becomes two pieces:</p>
+
+<ol>
+  <li><strong>Raise the prompt</strong> with <code>::campaign.raiseEvent(...)</code>, passing <code>isChoice = true</code>. REX shows Accept / Decline buttons and automatically bumps two event counters: <code>&lt;name&gt;_accepted</code> and <code>&lt;name&gt;_declined</code>.</li>
+  <li><strong>Handle the answer</strong> by listening for the <code>EventCounter</code> event and checking which counter changed.</li>
+</ol>
+
+<h3>The old RR pattern (for reference)</h3>
+
+<pre><code>declare_counter new_legion_flag
+declare_counter new_legion_result
+
+message_prompt
+{
+  flag_counter new_legion_flag
+  result_counter new_legion_result
+  title new_legion_possible_title
+  body new_legion_possible_body
+  image marian_reform
+}
+
+monitor_event ScriptPromptCallback I_CompareCounter new_legion_flag = 1
+    if I_CompareCounter new_legion_result = 1
+        inc_counter local_number_of_legions_julii 1
+        for_each settlement in faction "romans_julii"
+            if IsCapital
+                console_command create_unit local_settlement "roman hastati" 4 0 0 0
+                console_command create_unit local_settlement "roman princeps" 4 0 0 0
+                console_command create_unit local_settlement "roman triarii" 2 0 0 0
+                console_command add_population local -500
+                console_command add_money romans_julii, -4000
+            end_if
+        end_for
+    end_if
+end_monitor</code></pre>
+
+<h3>The Squirrel version</h3>
+
+<pre><code>// 1. Raise the prompt when the conditions are met.
+::events.on("FactionTurnStart", function(payload) {
+    local faction = payload.faction;
+    if (faction == null) return;
+    if (faction.name != "romans_julii") return;
+    if (::game.localFactionId() != faction.id) return;
+
+    // Only offer once — guard with a flag counter.
+    if (::game.eventCounter("new_legion_offered") == 1) return;
+
+    // Conditions: e.g. Mariana reforms active and the treasury is deep.
+    if (!faction.record) return;
+    if (faction.money &lt; 4000) return;
+
+    ::campaign.raiseEvent(
+        "marian_reform",                      // picture name and counter base
+        ::game.text("new_legion_possible_title"),
+        ::game.text("new_legion_possible_body"),
+        true,                                 // isChoice = true
+        -1, -1,                               // no map position
+        [faction.id]                          // only show to Julii
+    );
+
+    ::game.setEventCounter("new_legion_offered", 1);
+});
+
+// 2. Handle the player's answer.
+::events.on("EventCounter", function(payload) {
+    if (payload.name == "marian_reform_accepted" &amp;&amp; payload.value == 1) {
+        local julii = ::campaign.factionByName("romans_julii");
+        if (julii == null) return;
+
+        // Increment the running total of legions.
+        local total = ::game.eventCounter("local_number_of_legions_julii");
+        ::game.setEventCounter("local_number_of_legions_julii", total + 1);
+
+        // Find the Julii capital and spawn the legion there.
+        local capital = julii.capital;
+        if (capital != null) {
+            local garrison = capital.army;   // the garrison stack
+            if (garrison != null) {
+                garrison.createUnit("roman hastati",  4, 0, 0, -1);
+                garrison.createUnit("roman princeps", 4, 0, 0, -1);
+                garrison.createUnit("roman triarii",  2, 0, 0, -1);
+            }
+            capital.population -= 500;
+        }
+
+        julii.money -= 4000;
+
+        // Reset the accepted counter so the callback only fires once.
+        ::game.setEventCounter("marian_reform_accepted", 0);
+    }
+    else if (payload.name == "marian_reform_declined" &amp;&amp; payload.value == 1) {
+        // Player said no — do nothing, but reset the counter.
+        ::game.setEventCounter("marian_reform_declined", 0);
+    }
+});</code></pre>
+
+<h3>Parameters, compared</h3>
+
+<table>
+  <thead>
+    <tr><th>RR <code>message_prompt</code></th><th>Squirrel <code>::campaign.raiseEvent</code></th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>flag_counter</code></td>
+      <td>Automatic — the base <code>name</code> you pass becomes <code>&lt;name&gt;_accepted</code> and <code>&lt;name&gt;_declined</code></td>
+    </tr>
+    <tr>
+      <td><code>result_counter</code></td>
+      <td>Same counters — check their values in the <code>EventCounter</code> handler</td>
+    </tr>
+    <tr>
+      <td><code>title</code></td>
+      <td>Second argument to <code>raiseEvent</code> — use <code>::game.text("KEY")</code></td>
+    </tr>
+    <tr>
+      <td><code>body</code></td>
+      <td>Third argument to <code>raiseEvent</code></td>
+    </tr>
+    <tr>
+      <td><code>image</code></td>
+      <td>First argument (picture name); files still live in <code>ui/&lt;culture&gt;/eventpics</code></td>
+    </tr>
+    <tr>
+      <td><code>ScriptPromptCallback</code> monitor</td>
+      <td>A handler on <code>::events.on("EventCounter", ...)</code> that checks the counter name and value</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+<strong>Reset the accepted / declined counters</strong> after handling them. They are normal event counters and will stay at <code>1</code> otherwise, which means the <code>EventCounter</code> event will not re‑fire when the same choice is raised a second time.
+</div>
+
+<div class="warning">
+<strong>If <code>::campaign</code> is not available in your REX build,</strong> check the REX documentation for the correct accessor (it may be <code>::game.campaign</code>, or a global exposed under a different name). The object you want is the one with <code>raiseEvent</code>, <code>factionById</code>, <code>factionByName</code>, and <code>settlementByName</code>.
+</div>
+
+<hr>
+
+<h2 id="where">Important: where handlers may live</h2>
+
+<p>RR forbade putting a <code>monitor_event</code> inside another monitor, and forbade monitors inside reform or emergent‑faction triggers. In Squirrel those restrictions are gone. You can register a handler from inside another handler, from inside a function, from inside a loop — anywhere.</p>
+
+<p>The one rule to keep in mind is that <strong>registering the same handler twice registers it twice</strong>. REX does not de‑duplicate. If a handler runs on a frequently‑firing event, guard the registration:</p>
+
+<pre><code>::events.on("pluginLoad", function() {
+    // Register turn handlers exactly once.
+    ::events.on("FactionTurnStart", onFactionTurnStart);
+});</code></pre>
+
+<p>Because <code>pluginLoad</code> fires only when the script world loads, this is the safe place for one‑shot registrations.</p>
+
+<hr>
+
+<h2 id="summary">Summary</h2>
+
+<table>
+  <thead>
+    <tr><th>Old RR tool</th><th>Squirrel equivalent</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>monitor_event &lt;event&gt; &lt;condition&gt;</code></td>
+      <td><code>::events.on("&lt;event&gt;", function(payload) { if (&lt;condition&gt;) { … } })</code></td>
+    </tr>
+    <tr>
+      <td><code>monitor_conditions &lt;condition&gt;</code></td>
+      <td><code>::events.on("campaignTick", function(payload) { if (&lt;condition&gt;) { … } })</code></td>
+    </tr>
+    <tr>
+      <td><code>terminate_monitor</code></td>
+      <td><code>if (flag) return;</code> at the top of the handler</td>
+    </tr>
+    <tr>
+      <td><code>for_each … end_for</code></td>
+      <td>plain <code>for</code> loop over the object’s indexed list</td>
+    </tr>
+    <tr>
+      <td><code>local</code> keyword</td>
+      <td>a variable holding the current iteration</td>
+    </tr>
+    <tr>
+      <td><code>store_counter</code> / <code>retrieve_counter</code></td>
+      <td>native property, or a table in <code>persistent</code> keyed by <code>index</code></td>
+    </tr>
+    <tr>
+      <td><code>console_command</code></td>
+      <td>method call on the relevant object, or <code>::game.runConsoleCommand</code></td>
+    </tr>
+    <tr>
+      <td><code>declare_counter</code> / <code>inc_counter</code></td>
+      <td><code>::game.setEventCounter(name, value)</code> — counters are auto‑created</td>
+    </tr>
+    <tr>
+      <td><code>I_CompareCounter</code></td>
+      <td><code>::game.eventCounter("name") == value</code> (any comparison operator)</td>
+    </tr>
+    <tr>
+      <td><code>counter_operation</code></td>
+      <td>ordinary arithmetic on the integer values</td>
+    </tr>
+    <tr>
+      <td><code>and</code> / <code>or</code> / parentheses</td>
+      <td><code>&amp;&amp;</code> / <code>||</code> / parentheses</td>
+    </tr>
+    <tr>
+      <td><code>message_prompt</code> + <code>ScriptPromptCallback</code></td>
+      <td><code>::campaign.raiseEvent(..., isChoice = true)</code> + a handler on <code>EventCounter</code></td>
+    </tr>
+    <tr>
+      <td><code>end_monitor</code></td>
+      <td>end of function body</td>
+    </tr>
+    <tr>
+      <td>Command / Condition / Event reference</td>
+      <td><code>api.d.nut</code> — one file, everything</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Once you have internalised “events are <code>::events.on</code>, conditions are <code>if</code>, commands are function calls, and counters are <code>::game.eventCounter</code>”, you can read the RR script reference and translate almost any old script into Squirrel in a matter of minutes.</p>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>

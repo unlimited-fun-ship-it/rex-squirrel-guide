@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>State Machines — Squirrel Scripting in REX</title>
+<link rel="stylesheet" href="style.css">
+<script src="navbar.js"></script>
+</head>
+<body>
+
+<h1>State Machines — Squirrel Scripting in REX</h1>
+
+<p>State machines are a very useful tool in scripting — partly because of the lack of availability of some common algorithms in the older script syntax, and partly because of the turn‑based nature of the game. A great many things in a Total War campaign happen on a schedule or in a fixed sequence, and a state machine is the cleanest way to express both.</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#what">What is a state machine?</a></li>
+  <li><a href="#python">A simple state machine in Python</a></li>
+  <li><a href="#rr">The old RR example — a 3‑turn year</a></li>
+  <li><a href="#squirrel">The Squirrel version</a></li>
+  <li><a href="#set-state">The <code>set_state</code> trick, and why Squirrel does not need it</a></li>
+  <li><a href="#complex">A more intricate state machine</a></li>
+  <li><a href="#bridging">Bridging a state machine to other scripts</a></li>
+  <li><a href="#notes">Notes and pitfalls</a></li>
+</ul>
+</div>
+
+<hr>
+
+<h2 id="what">What is a state machine?</h2>
+
+<p>In programming, a <strong>state machine</strong> is a function that receives a state variable as its input and reacts accordingly. For each possible value of the state, there is an action associated with it (or not), and the state variable is often changed to move to the next state.</p>
+
+<p>The state is just a number (or a string, or an enum) that represents “where in the sequence we currently are”. The function looks at the current state, decides what to do, and decides what the next state should be. On the next call, the process repeats.</p>
+
+<p>Because a campaign runs turn by turn, a state machine fits naturally: one call per turn, one state transition per turn.</p>
+
+<h2 id="python">A simple state machine in Python</h2>
+
+<p>Here is a very simple state machine, written in Python for clarity. It has four states, numbered 0 to 3:</p>
+
+<pre><code>def state_machine(state):
+    if state == 0:
+        function1()
+        state = 1
+    elif state == 1:
+        function2()
+        state = 2
+    elif state == 2:
+        state = 0
+    elif state == 3:
+        function3()
+        state = 2
+    return state</code></pre>
+
+<p>Reading it:</p>
+
+<ul>
+  <li>If the state is <code>0</code>, run <code>function1</code> and move to state <code>1</code>.</li>
+  <li>If the state is <code>1</code>, run <code>function2</code> and move to state <code>2</code>.</li>
+  <li>If the state is <code>2</code>, do nothing and move back to state <code>0</code>.</li>
+  <li>If the state is <code>3</code>, run <code>function3</code> and move to state <code>2</code>.</li>
+</ul>
+
+<p>That is the whole idea. Everything below is just this pattern in the game’s own scripting languages.</p>
+
+<h2 id="rr">The old RR example — a 3‑turn year</h2>
+
+<p>The most familiar use of a state machine in Rome: Total War scripting is the <strong>multi‑turn year</strong>. In vanilla, a year is two turns (summer, winter). Mods often want three, four, or more turns per year, with the season cycling accordingly.</p>
+
+<p>Here is the classic RR approach, using a persistent counter as the state:</p>
+
+<pre><code>script
+    declare_persistent_counter turn_number
+
+    monitor_event NewTurnStart TrueCondition
+        if I_CompareCounter turn_number = 0
+            console_command season summer
+        end_if
+        if I_CompareCounter turn_number = 1
+            console_command season summer
+        end_if
+        if I_CompareCounter turn_number = 2
+            console_command season winter
+            set_counter turn_number -1
+        end_if
+        inc_counter turn_number 1
+    end_monitor
+end_script</code></pre>
+
+<p>How it works:</p>
+
+<ul>
+  <li><code>turn_number</code> is the state. It can be <code>0</code>, <code>1</code>, or <code>2</code>.</li>
+  <li>On state <code>0</code> or <code>1</code>, the season is set to summer.</li>
+  <li>On state <code>2</code>, the season is set to winter, and the counter is set to <code>-1</code>.</li>
+  <li>At the end, the counter is incremented by 1. If it was <code>-1</code>, it becomes <code>0</code> — the cycle restarts.</li>
+</ul>
+
+<p>Why <code>-1</code> rather than <code>0</code>? Because the increment happens at the end. Setting to <code>-1</code> means that after the increment, the state is <code>0</code>, ready for the next cycle. It is a small optimisation: the “reset” is folded into the increment that is going to happen anyway.</p>
+
+<p>This works, but it is a little obscure. The next version of the same script is clearer:</p>
+
+<pre><code>script
+    declare_persistent_counter turn_number
+
+    monitor_event NewTurnStart TrueCondition
+        declare_counter set_state
+        set_counter set_state 0
+
+        if I_CompareCounter turn_number = 0
+            console_command season summer
+            set_counter turn_number 1
+            set_counter set_state 1
+        end_if
+        if I_CompareCounter turn_number = 1
+              &amp;&amp; I_CompareCounter set_state = 0
+            console_command season summer
+            set_counter turn_number 2
+            set_counter set_state 1
+        end_if
+        if I_CompareCounter turn_number = 2
+              &amp;&amp; I_CompareCounter set_state = 0
+            console_command season winter
+            set_counter turn_number 0
+            set_counter set_state 1
+        end_if
+    end_monitor
+end_script</code></pre>
+
+<p>Now each state explicitly sets the next state, and the state change lives inside the <code>if</code> that handles it. The result is easier to read: “on state 0, do this and go to state 1; on state 1, do this and go to state 2; on state 2, do this and go to state 0”.</p>
+
+<h2 id="squirrel">The Squirrel version</h2>
+
+<p>Squirrel is a real language, so the state machine collapses to something much closer to the Python original. There is no need for a persistent counter (event counters are already saved with the campaign), and there is no need for the <code>set_state</code> trick — Squirrel’s <code>else if</code> chain is inherently mutually exclusive.</p>
+
+<h4>Version A — compact, increment at the end</h4>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    local turnNumber = ::game.eventCounter("turn_number");
+    if (turnNumber == null) turnNumber = 0;
+
+    if (turnNumber == 0) {
+        ::game.runScriptCommand("season", "summer");
+    }
+    else if (turnNumber == 1) {
+        ::game.runScriptCommand("season", "summer");
+    }
+    else if (turnNumber == 2) {
+        ::game.runScriptCommand("season", "winter");
+        // Next turn we start the cycle again; the increment below
+        // turns -1 into 0.
+        turnNumber = -1;
+    }
+
+    ::game.setEventCounter("turn_number", turnNumber + 1);
+});</code></pre>
+
+<h4>Version B — explicit state transitions</h4>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    local turnNumber = ::game.eventCounter("turn_number");
+    if (turnNumber == null) turnNumber = 0;
+
+    if (turnNumber == 0) {
+        ::game.runScriptCommand("season", "summer");
+        ::game.setEventCounter("turn_number", 1);
+    }
+    else if (turnNumber == 1) {
+        ::game.runScriptCommand("season", "summer");
+        ::game.setEventCounter("turn_number", 2);
+    }
+    else if (turnNumber == 2) {
+        ::game.runScriptCommand("season", "winter");
+        ::game.setEventCounter("turn_number", 0);
+    }
+});</code></pre>
+
+<p>Version B is the direct translation of the second RR script and is the recommended style. Each branch handles its own state and writes its own next state, so the whole machine reads top to bottom.</p>
+
+<h4>Reading the season command</h4>
+
+<p><code>season</code> is a campaign‑script command, not a Squirrel method, so it goes through <code>::game.runScriptCommand</code>. If your build exposes a <code>Campaign.season</code> property (see the API docs), you can assign to that instead — the effect is the same:</p>
+
+<pre><code>::game.campaign.season = 2;   // 2 = summer in the four‑season numbering</code></pre>
+
+<div class="note">
+<strong>Which to use?</strong> If <code>Campaign.season</code> is available, prefer it: it is a typed write and avoids the stringly‑typed command bridge. If not, <code>::game.runScriptCommand("season", …)</code> is the reliable fallback and works in every build.
+</div>
+
+<h2 id="set-state">The <code>set_state</code> trick, and why Squirrel does not need it</h2>
+
+<p>In the second RR script, a <code>set_state</code> counter is used to make the following <code>if</code> statements behave like <code>else if</code> statements. Without it, if <code>turn_number</code> started at <code>0</code>, the first <code>if</code> would fire, set <code>turn_number</code> to <code>1</code>, and then the second <code>if</code> would also fire because <code>turn_number</code> is now <code>1</code> — and so on down the chain. The <code>set_state</code> counter is set to <code>1</code> by whichever branch fires, and every subsequent branch checks that it is still <code>0</code>.</p>
+
+<p>Squirrel has real <code>else if</code>, so this problem does not exist. A chain of <code>if / else if / else if</code> evaluates each condition in order and stops at the first one that matches, no matter what the earlier branch did to the state variable. The whole <code>set_state</code> mechanism disappears.</p>
+
+<p>This is one of the biggest readability wins of moving to Squirrel. If you find yourself writing an <code>I_CompareCounter … set_state = 0</code> guard in a new script, you are translating RR syntax by rote. Stop, and use <code>else if</code> instead.</p>
+
+<h2 id="complex">A more intricate state machine</h2>
+
+<p>State machines are not limited to loops. You can branch, skip states, hold state until some condition is met, and so on. The following example runs a scripted storyline over several turns. It only advances from one state to the next when the player has done something specific, so the sequence can pause indefinitely.</p>
+
+<p>The states:</p>
+
+<div class="diagram">
+  <span class="state">0</span>
+  <span class="arrow">→</span>
+  <span class="state">1</span>
+  <span class="arrow">→</span>
+  <span class="state">2</span>
+  <span class="arrow">→</span>
+  <span class="state">3</span>
+  <span class="arrow">→</span>
+  <span class="state">4</span>
+  <span class="arrow">→</span>
+  <span class="state">5</span>
+  <span class="arrow">↺</span>
+  <span class="state">0</span>
+</div>
+
+<p>States 0, 2, and 4 fire a message and advance automatically. States 1, 3, and 5 wait for the player to capture a settlement before advancing.</p>
+
+<pre><code>::events.on("NewTurnStart", function(payload) {
+    local state = ::game.eventCounter("story_state");
+    if (state == null) state = 0;
+
+    if (state == 0) {
+        ::game.showHistoricEvent("senate_01",
+            "The Story Begins",
+            "A stranger arrives at your court with a proposal.");
+        ::game.setEventCounter("story_state", 1);
+    }
+    else if (state == 1) {
+        // Wait for the player to capture a settlement.
+        if (::game.eventCounter("player_captured_settlement") == 1) {
+            ::game.setEventCounter("player_captured_settlement", 0);
+            ::game.setEventCounter("story_state", 2);
+        }
+    }
+    else if (state == 2) {
+        ::game.showHistoricEvent("senate_01",
+            "A Debt Owed",
+            "Your new ally demands payment.");
+        ::game.setEventCounter("story_state", 3);
+    }
+    else if (state == 3) {
+        if (::game.eventCounter("tribute_paid") == 1) {
+            ::game.setEventCounter("tribute_paid", 0);
+            ::game.setEventCounter("story_state", 4);
+        }
+    }
+    else if (state == 4) {
+        ::game.showHistoricEvent("senate_01",
+            "Betrayal",
+            "Your ally turns on you.");
+        ::game.setEventCounter("story_state", 5);
+    }
+    else if (state == 5) {
+        if (::game.eventCounter("ally_defeated") == 1) {
+            ::game.setEventCounter("ally_defeated", 0);
+            ::game.setEventCounter("story_state", 0);   // loop or stop
+        }
+    }
+});
+
+// The flags the state machine above waits on are set by other handlers.
+::events.on("GeneralCaptureSettlement", function(payload) {
+    if (::game.localFactionId() != payload.faction.id) return;
+    ::game.setEventCounter("player_captured_settlement", 1);
+});
+
+::events.on("FactionDestroyed", function(payload) {
+    if (payload.faction.name == "some_ally_faction") {
+        ::game.setEventCounter("ally_defeated", 1);
+    }
+});</code></pre>
+
+<p>The pattern to notice: the state machine only reads and writes the state counter. Everything else — the events, the flags, the actual story — lives in separate handlers. This keeps each piece small and testable, and it means the state machine itself does not have to know anything about how the conditions are set.</p>
+
+<h2 id="bridging">Bridging a state machine to other scripts</h2>
+
+<p>The state variable is an event counter, which means it is visible to every other script, including the old RR major event scripts and spawn scripts. That is a feature, not a coincidence. If you want a major event to fire when the storyline reaches a particular point, read the state counter in the major event script:</p>
+
+<pre><code>;; In a major event script.
+script
+    if I_CompareCounter story_state = 4
+        return true
+    end_if
+    return false
+end_script</code></pre>
+
+<p>And if you want a Squirrel script to react to the storyline reaching a state, register a handler on the <code>EventCounter</code> event and check for the state change:</p>
+
+<pre><code>::events.on("EventCounter", function(payload) {
+    if (payload.name != "story_state") return;
+    if (payload.value == 4) {
+        ::game.log("Story reached state 4 — triggering the climax.");
+        // Do something extra here.
+    }
+});</code></pre>
+
+<p>This turns the state counter into a lightweight messaging bus: any part of the mod, whether Squirrel or engine‑scripted, can watch it and react.</p>
+
+<h2 id="notes">Notes and pitfalls</h2>
+
+<ul>
+  <li><strong>Prefer <code>else if</code> over the <code>set_state</code> trick.</strong> Squirrel’s <code>else if</code> is mutually exclusive by definition. Do not port the <code>set_state</code> counter from RR scripts unless you have a specific reason to want two branches to be able to fire in the same pass.</li>
+  <li><strong>Counters are <code>null</code> until first set.</strong> <code>::game.eventCounter</code> returns <code>null</code> for a counter that has never been written. Always coalesce to a default before comparing, as the examples above do.</li>
+  <li><strong>Event counters are saved with the campaign.</strong> This is what makes them the right home for a state variable. Do not use a <code>persistent</code> entry for the state — it will not survive a save/load.</li>
+  <li><strong>Guard against re‑entry.</strong> If two events can bump the same state in the same turn, decide which one wins. The state machine should read the state at the top of its handler and write the next state exactly once.</li>
+  <li><strong>Keep the state numeric.</strong> Strings work too, but a numeric state is easier to inspect in the log, easier to compare in a major event script, and easier to reason about.</li>
+  <li><strong>Name the states.</strong> For anything more than three states, define named constants at the top of your script:
+    <pre><code>local STATE_INTRO       = 0;
+local STATE_AWAIT_GIFT  = 1;
+local STATE_GIFT_GIVEN  = 2;
+local STATE_WAR         = 3;
+local STATE_RESOLUTION  = 4;</code></pre>
+    It costs nothing and turns a wall of magic numbers into readable logic.
+  </li>
+  <li><strong>Do not put heavy work in the state machine.</strong> The machine itself should be a thin dispatcher. The work belongs in separate functions that the machine calls.</li>
+  <li><strong>Sketch the diagram before you write it.</strong> A state machine with more than four or five states is much easier to get right if you draw the states and arrows on paper first.</li>
+</ul>
+
+<div class="footer">
+  <p>REX Community Patch — Squirrel Scripting Guide</p>
+</div>
+
+</body>
+</html>
