@@ -1,18 +1,53 @@
-/* REX Squirrel Scripting — shared navigation bar
-   - Injected on every page except index.html.
-   - Marks the current page as "active".
-   - Slides out of view when scrolling down, back in when scrolling up.
+/* REX Squirrel Scripting — shared navigation bar + theme toggle
+   - Injects the navbar on every page except index.html.
+   - Injects a floating theme toggle on index.html.
+   - Remembers the reader's theme choice in localStorage.
+   - Slides the navbar out of view when scrolling down, back in when scrolling up.
 */
 (function () {
   'use strict';
 
+  var THEME_KEY = 'rex-theme';
+
   var currentPage = location.pathname.split('/').pop() || 'index.html';
+  var isHome = currentPage === 'index.html' || currentPage === '';
 
-  // No navbar on the home page.
-  if (currentPage === 'index.html') return;
+  // ---------- Theme helpers ----------
 
-  // Reserve space before the body renders (avoids a layout jump).
-  document.documentElement.classList.add('has-navbar');
+  function toggleTheme() {
+    var current = document.documentElement.getAttribute('data-theme') || 'light';
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  }
+
+  function buildThemeButton(extraClass) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'theme-toggle' + (extraClass ? ' ' + extraClass : '');
+    btn.setAttribute('aria-label', 'Toggle dark mode');
+    btn.title = 'Toggle dark mode';
+    btn.innerHTML =
+      '<svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" ' +
+      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<circle cx="12" cy="12" r="4"/>' +
+      '<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2' +
+      'M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>' +
+      '</svg>' +
+      '<svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" ' +
+      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>' +
+      '</svg>';
+    btn.addEventListener('click', toggleTheme);
+    return btn;
+  }
+
+  // Reserve space for the navbar before the body renders (avoids a layout jump).
+  if (!isHome) {
+    document.documentElement.classList.add('has-navbar');
+  }
+
+  // ---------- Navbar ----------
 
   var pages = [
     { href: 'index.html',                label: 'Home' },
@@ -36,6 +71,9 @@
     brand.textContent = 'REX Squirrel Scripting';
     nav.appendChild(brand);
 
+    var right = document.createElement('div');
+    right.className = 'nav-right';
+
     var links = document.createElement('div');
     links.className = 'links';
 
@@ -48,7 +86,10 @@
       links.appendChild(a);
     }
 
-    nav.appendChild(links);
+    right.appendChild(links);
+    right.appendChild(buildThemeButton());
+    nav.appendChild(right);
+
     document.body.insertBefore(nav, document.body.firstChild);
 
     // ---- Scroll-hide behaviour ----
@@ -80,9 +121,19 @@
     }, { passive: true });
   }
 
+  // ---------- Entry point ----------
+
+  function init() {
+    if (isHome) {
+      document.body.appendChild(buildThemeButton('theme-toggle-floating'));
+    } else {
+      buildNavbar();
+    }
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', buildNavbar);
+    document.addEventListener('DOMContentLoaded', init);
   } else {
-    buildNavbar();
+    init();
   }
 })();
